@@ -59,6 +59,7 @@ try:
 except ImportError:
     _USE_C = False
 
+_USE_C = False
 
 EPOCH_AWARE = datetime.datetime.fromtimestamp(0, utc)
 EPOCH_NAIVE = datetime.datetime.utcfromtimestamp(0)
@@ -341,7 +342,12 @@ def _iterate_elements(data, position, obj_end, opts):
 def _elements_to_dict(data, position, obj_end, opts):
     """Decode a BSON document."""
     result = opts.document_class()
+    temp_dict = {}
     for key, value in _iterate_elements(data, position, obj_end, opts):
+        if key == '$set':
+            temp_dict = dict(temp_dict, **value)
+            value = temp_dict
+
         result[key] = value
     return result
 
