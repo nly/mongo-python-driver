@@ -16,6 +16,8 @@ is a `gridfs
 <http://www.mongodb.org/display/DOCS/GridFS+Specification>`_
 implementation on top of ``pymongo``.
 
+PyMongo 3.3.0.dev0 supports MongoDB 2.4, 2.6, 3.0, and 3.2
+
 Support / Feedback
 ==================
 
@@ -86,7 +88,7 @@ with PyMongo.
 Dependencies
 ============
 
-PyMongo supports Python 2.6, 2.7, and 3.2+.
+PyMongo supports CPython 2.6, 2.7, 3.3+, PyPy, and PyPy3.
 
 Optional dependencies for GSSAPI and TLS:
 

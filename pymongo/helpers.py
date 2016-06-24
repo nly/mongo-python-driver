@@ -17,10 +17,12 @@
 import collections
 import datetime
 import struct
+import sys
+import traceback
 
 import bson
 from bson.codec_options import CodecOptions
-from bson.py3compat import itervalues, string_type, iteritems, u
+from bson.py3compat import itervalues, string_type, iteritems
 from bson.son import SON
 from pymongo import ASCENDING
 from pymongo.errors import (CursorNotFound,
@@ -36,7 +38,7 @@ from pymongo.message import _Query, _convert_exception
 from pymongo.read_concern import DEFAULT_READ_CONCERN
 
 
-_UUNDER = u("_")
+_UUNDER = u"_"
 
 _UNICODE_REPLACE_CODEC_OPTIONS = CodecOptions(
     unicode_decode_error_handler='replace')
@@ -337,3 +339,20 @@ def _fields_list_to_dict(fields, option_name):
 
     raise TypeError("%s must be a mapping or "
                     "list of key names" % (option_name,))
+
+
+def _handle_exception():
+    """Print exceptions raised by subscribers to stderr."""
+    # Heavily influenced by logging.Handler.handleError.
+
+    # See note here:
+    # https://docs.python.org/3.4/library/sys.html#sys.__stderr__
+    if sys.stderr:
+        einfo = sys.exc_info()
+        try:
+            traceback.print_exception(einfo[0], einfo[1], einfo[2],
+                                      None, sys.stderr)
+        except IOError:
+            pass
+        finally:
+            del einfo

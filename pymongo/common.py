@@ -49,6 +49,9 @@ HEARTBEAT_FREQUENCY = 10
 # Frequency to process kill-cursors, in seconds. See MongoClient.close_cursor.
 KILL_CURSOR_FREQUENCY = 1
 
+# Frequency to process events queue, in seconds.
+EVENTS_QUEUE_FREQUENCY = 1
+
 # How long to wait, in seconds, for a suitable server to be found before
 # aborting an operation. For example, if the client attempts an insert
 # during a replica set election, SERVER_SELECTION_TIMEOUT governs the
@@ -63,6 +66,12 @@ CONNECT_TIMEOUT = 20.0
 
 # Default value for maxPoolSize.
 MAX_POOL_SIZE = 100
+
+# Default value for minPoolSize.
+MIN_POOL_SIZE = 0
+
+# Default value for maxIdleTimeMS.
+MAX_IDLE_TIME_MS = None
 
 # Default value for localThresholdMS.
 LOCAL_THRESHOLD_MS = 15
@@ -441,6 +450,7 @@ URI_VALIDATORS = {
     'tz_aware': validate_boolean_or_string,
     'uuidrepresentation': validate_uuid_representation,
     'connect': validate_boolean_or_string,
+    'minpoolsize': validate_non_negative_integer
 }
 
 TIMEOUT_VALIDATORS = {
@@ -448,6 +458,7 @@ TIMEOUT_VALIDATORS = {
     'sockettimeoutms': validate_timeout_or_none,
     'waitqueuetimeoutms': validate_timeout_or_none,
     'serverselectiontimeoutms': validate_timeout_or_zero,
+    'maxidletimems': validate_timeout_or_none,
 }
 
 KW_VALIDATORS = {
