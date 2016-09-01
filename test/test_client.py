@@ -22,13 +22,12 @@ import struct
 import sys
 import time
 import traceback
-import warnings
 
 sys.path[0:0] = [""]
 
 from bson import BSON
 from bson.codec_options import CodecOptions
-from bson.py3compat import thread, u
+from bson.py3compat import thread
 from bson.son import SON
 from bson.tz_util import utc
 from pymongo import auth, message
@@ -39,10 +38,10 @@ from pymongo.errors import (AutoReconnect,
                             ConnectionFailure,
                             InvalidName,
                             OperationFailure,
-                            CursorNotFound,
                             NetworkTimeout,
                             InvalidURI)
-from pymongo.message import _CursorAddress
+from pymongo.monitoring import (ServerHeartbeatListener,
+                                ServerHeartbeatStartedEvent)
 from pymongo.mongo_client import MongoClient
 from pymongo.pool import SocketInfo
 from pymongo.read_preferences import ReadPreference
@@ -64,6 +63,7 @@ from test import (client_context,
 from test.pymongo_mocks import MockClient
 from test.utils import (assertRaisesExactly,
                         delay,
+                        HeartbeatEventListener,
                         remove_all_users,
                         server_is_master_with_slave,
                         get_pool,
@@ -72,6 +72,7 @@ from test.utils import (assertRaisesExactly,
                         wait_until,
                         rs_or_single_client,
                         rs_or_single_client_noauth,
+                        single_client,
                         lazy_client_trial,
                         NTHREADS)
 
@@ -80,6 +81,7 @@ class ClientUnitTest(unittest.TestCase):
     """MongoClient tests that don't require a server."""
 
     @classmethod
+    @client_context.require_connection
     def setUpClass(cls):
         cls.client = MongoClient(host, port, connect=False,
                                  serverSelectionTimeoutMS=100)
@@ -186,6 +188,82 @@ class ClientUnitTest(unittest.TestCase):
 
 
 class TestClient(IntegrationTest):
+
+    def test_max_idle_time_reaper(self):
+        with client_knobs(kill_cursor_frequency=0.1):
+            # Assert reaper doesn't remove sockets when maxIdleTimeMS not set
+            client = MongoClient(host, port)
+            server = client._get_topology().select_server(any_server_selector)
+            with server._pool.get_socket({}) as sock_info:
+                pass
+            self.assertEqual(1, len(server._pool.sockets))
+            self.assertTrue(sock_info in server._pool.sockets)
+
+            # Assert reaper removes idle socket and replaces it with a new one
+            client = MongoClient(host, port, maxIdleTimeMS=.5, minPoolSize=1)
+            server = client._get_topology().select_server(any_server_selector)
+            with server._pool.get_socket({}) as sock_info:
+                pass
+            self.assertEqual(1, len(server._pool.sockets))
+            wait_until(lambda: sock_info not in server._pool.sockets,
+                       "reaper removes stale socket eventually")
+            wait_until(lambda: 1 == len(server._pool.sockets),
+                       "reaper replaces stale socket with new one")
+
+            # Assert reaper has removed idle socket and NOT replaced it
+            client = MongoClient(host, port, maxIdleTimeMS=.5)
+            server = client._get_topology().select_server(any_server_selector)
+            with server._pool.get_socket({}):
+                pass
+            wait_until(
+                lambda: 0 == len(server._pool.sockets),
+                "stale socket reaped and new one NOT added to the pool")
+
+    def test_min_pool_size(self):
+        with client_knobs(kill_cursor_frequency=.1):
+            client = MongoClient(host, port)
+            server = client._get_topology().select_server(any_server_selector)
+            self.assertEqual(0, len(server._pool.sockets))
+
+            # Assert that pool started up at minPoolSize
+            client = MongoClient(host, port, minPoolSize=10)
+            server = client._get_topology().select_server(any_server_selector)
+            wait_until(lambda: 10 == len(server._pool.sockets),
+                       "pool initialized with 10 sockets")
+
+            # Assert that if a socket is closed, a new one takes its place
+            with server._pool.get_socket({}) as sock_info:
+                sock_info.close()
+            wait_until(lambda: 10 == len(server._pool.sockets),
+                       "a closed socket gets replaced from the pool")
+            self.assertFalse(sock_info in server._pool.sockets)
+
+    def test_max_idle_time_checkout(self):
+        # Use high frequency to test _get_socket_no_auth.
+        with client_knobs(kill_cursor_frequency=99999999):
+            client = MongoClient(host, port, maxIdleTimeMS=.5)
+            server = client._get_topology().select_server(any_server_selector)
+            with server._pool.get_socket({}) as sock_info:
+                pass
+            self.assertEqual(1, len(server._pool.sockets))
+            time.sleep(1) #  Sleep so that the socket becomes stale.
+
+            with server._pool.get_socket({}) as new_sock_info:
+                self.assertNotEqual(sock_info, new_sock_info)
+            self.assertEqual(1, len(server._pool.sockets))
+            self.assertFalse(sock_info in server._pool.sockets)
+            self.assertTrue(new_sock_info in server._pool.sockets)
+
+            # Test that sockets are reused if maxIdleTimeMS is not set.
+            client = MongoClient(host, port)
+            server = client._get_topology().select_server(any_server_selector)
+            with server._pool.get_socket({}) as sock_info:
+                pass
+            self.assertEqual(1, len(server._pool.sockets))
+            time.sleep(1)
+            with server._pool.get_socket({}) as new_sock_info:
+                self.assertEqual(sock_info, new_sock_info)
+            self.assertEqual(1, len(server._pool.sockets))
 
     def test_constants(self):
         # Set bad defaults.
@@ -305,11 +383,12 @@ class TestClient(IntegrationTest):
 
     def test_getters(self):
         self.assertEqual(client_context.client.address, (host, port))
-        self.assertEqual(client_context.nodes, self.client.nodes)
+        wait_until(lambda: client_context.nodes == self.client.nodes,
+                   "find all nodes")
 
     def test_database_names(self):
-        self.client.pymongo_test.test.insert_one({"dummy": u("object")})
-        self.client.pymongo_test_mike.test.insert_one({"dummy": u("object")})
+        self.client.pymongo_test.test.insert_one({"dummy": u"object"})
+        self.client.pymongo_test_mike.test.insert_one({"dummy": u"object"})
 
         dbs = self.client.database_names()
         self.assertTrue("pymongo_test" in dbs)
@@ -319,8 +398,8 @@ class TestClient(IntegrationTest):
         self.assertRaises(TypeError, self.client.drop_database, 5)
         self.assertRaises(TypeError, self.client.drop_database, None)
 
-        self.client.pymongo_test.test.insert_one({"dummy": u("object")})
-        self.client.pymongo_test2.test.insert_one({"dummy": u("object")})
+        self.client.pymongo_test.test.insert_one({"dummy": u"object"})
+        self.client.pymongo_test2.test.insert_one({"dummy": u"object"})
         dbs = self.client.database_names()
         self.assertIn("pymongo_test", dbs)
         self.assertIn("pymongo_test2", dbs)
@@ -627,8 +706,8 @@ class TestClient(IntegrationTest):
             uri += '/?replicaSet=' + client_context.replica_set_name
 
         client = rs_or_single_client_noauth(uri)
-        client.pymongo_test.test.insert_one({"dummy": u("object")})
-        client.pymongo_test_bernie.test.insert_one({"dummy": u("object")})
+        client.pymongo_test.test.insert_one({"dummy": u"object"})
+        client.pymongo_test_bernie.test.insert_one({"dummy": u"object"})
 
         dbs = client.database_names()
         self.assertTrue("pymongo_test" in dbs)
@@ -736,85 +815,6 @@ class TestClient(IntegrationTest):
         new_sock_info = next(iter(pool.sockets))
         self.assertEqual(old_sock_info, new_sock_info)
 
-    def test_kill_cursors_with_cursoraddress(self):
-        if (client_context.is_mongos
-                and not client_context.version.at_least(2, 4, 7)):
-            # Old mongos sends incorrectly formatted error response when
-            # cursor isn't found, see SERVER-9738.
-            raise SkipTest("Can't test kill_cursors against old mongos")
-
-        self.collection = self.client.pymongo_test.test
-        self.collection.drop()
-
-        self.collection.insert_many([{'_id': i} for i in range(200)])
-        cursor = self.collection.find().batch_size(1)
-        next(cursor)
-        self.client.kill_cursors(
-            [cursor.cursor_id],
-            _CursorAddress(self.client.address, self.collection.full_name))
-
-        # Prevent killcursors from reaching the server while a getmore is in
-        # progress -- the server logs "Assertion: 16089:Cannot kill active
-        # cursor."
-        time.sleep(2)
-
-        def raises_cursor_not_found():
-            try:
-                next(cursor)
-                return False
-            except CursorNotFound:
-                return True
-
-        wait_until(raises_cursor_not_found, 'close cursor')
-
-    def test_kill_cursors_with_tuple(self):
-        if (client_context.is_mongos
-                and not client_context.version.at_least(2, 4, 7)):
-            # Old mongos sends incorrectly formatted error response when
-            # cursor isn't found, see SERVER-9738.
-            raise SkipTest("Can't test kill_cursors against old mongos")
-
-        self.collection = self.client.pymongo_test.test
-        self.collection.drop()
-
-        self.collection.insert_many([{'_id': i} for i in range(200)])
-        cursor = self.collection.find().batch_size(1)
-        next(cursor)
-        self.client.kill_cursors(
-            [cursor.cursor_id],
-            self.client.address)
-
-        # Prevent killcursors from reaching the server while a getmore is in
-        # progress -- the server logs "Assertion: 16089:Cannot kill active
-        # cursor."
-        time.sleep(2)
-
-        def raises_cursor_not_found():
-            try:
-                next(cursor)
-                return False
-            except CursorNotFound:
-                return True
-
-        wait_until(raises_cursor_not_found, 'close cursor')
-
-    def test_kill_cursors_with_server_unavailable(self):
-        with client_knobs(kill_cursor_frequency=9999999):
-            client = MongoClient('doesnt exist', connect=False,
-                                 serverSelectionTimeoutMS=0)
-
-            # Wait for the first tick of the periodic kill-cursors to pass.
-            time.sleep(1)
-
-            # Enqueue a kill-cursors message.
-            client.close_cursor(1234, ('doesnt-exist', 27017))
-
-            with warnings.catch_warnings(record=True) as user_warnings:
-                client._process_kill_cursors_queue()
-
-            self.assertIn("couldn't close cursor on ('doesnt-exist', 27017)",
-                          str(user_warnings[0].message))
-
     def test_lazy_connect_w0(self):
         # Ensure that connect-on-demand works when the first operation is
         # an unacknowledged write. This exercises _writable_max_wire_version().
@@ -902,6 +902,52 @@ class TestClient(IntegrationTest):
                 operation=message._GetMore('pymongo_test', 'collection',
                                            101, 1234, client.codec_options),
                 address=('not-a-member', 27017))
+
+    def test_heartbeat_frequency_ms(self):
+        class HeartbeatStartedListener(ServerHeartbeatListener):
+            def __init__(self):
+                self.results = []
+
+            def started(self, event):
+                self.results.append(event)
+
+            def succeeded(self, event):
+                pass
+
+            def failed(self, event):
+                pass
+
+        old_init = ServerHeartbeatStartedEvent.__init__
+
+        def init(self, *args):
+            old_init(self, *args)
+            self.time = time.time()
+
+        try:
+            ServerHeartbeatStartedEvent.__init__ = init
+            listener = HeartbeatStartedListener()
+            uri = "mongodb://%s:%d/?heartbeatFrequencyMS=500" % (host, port)
+            client = single_client(uri, event_listeners=[listener])
+            wait_until(lambda: len(listener.results) >= 2,
+                       "record two ServerHeartbeatStartedEvents")
+
+            events = listener.results
+
+            # Default heartbeatFrequencyMS is 10 sec. Check the interval was
+            # closer to 0.5 sec with heartbeatFrequencyMS configured.
+            self.assertAlmostEqual(
+                events[1].time - events[0].time, 0.5, delta=2)
+
+            client.close()
+        finally:
+            ServerHeartbeatStartedEvent.__init__ = old_init
+
+    def test_small_heartbeat_frequency_ms(self):
+        uri = "mongodb://example/?heartbeatFrequencyMS=499"
+        with self.assertRaises(ConfigurationError) as context:
+            MongoClient(uri)
+
+        self.assertIn('heartbeatFrequencyMS', str(context.exception))
 
 
 class TestExhaustCursor(IntegrationTest):

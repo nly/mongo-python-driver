@@ -58,29 +58,45 @@ class client_knobs(object):
     def __init__(
             self,
             heartbeat_frequency=None,
-            kill_cursor_frequency=None):
+            min_heartbeat_interval=None,
+            kill_cursor_frequency=None,
+            events_queue_frequency=None):
         self.heartbeat_frequency = heartbeat_frequency
+        self.min_heartbeat_interval = min_heartbeat_interval
         self.kill_cursor_frequency = kill_cursor_frequency
+        self.events_queue_frequency = events_queue_frequency
 
         self.old_heartbeat_frequency = None
+        self.old_min_heartbeat_interval = None
         self.old_kill_cursor_frequency = None
+        self.old_events_queue_frequency = None
 
     def enable(self):
         self.old_heartbeat_frequency = common.HEARTBEAT_FREQUENCY
+        self.old_min_heartbeat_interval = common.MIN_HEARTBEAT_INTERVAL
         self.old_kill_cursor_frequency = common.KILL_CURSOR_FREQUENCY
+        self.old_events_queue_frequency = common.EVENTS_QUEUE_FREQUENCY
 
         if self.heartbeat_frequency is not None:
             common.HEARTBEAT_FREQUENCY = self.heartbeat_frequency
 
+        if self.min_heartbeat_interval is not None:
+            common.MIN_HEARTBEAT_INTERVAL = self.min_heartbeat_interval
+
         if self.kill_cursor_frequency is not None:
             common.KILL_CURSOR_FREQUENCY = self.kill_cursor_frequency
+
+        if self.events_queue_frequency is not None:
+            common.EVENTS_QUEUE_FREQUENCY = self.events_queue_frequency
 
     def __enter__(self):
         self.enable()
 
     def disable(self):
         common.HEARTBEAT_FREQUENCY = self.old_heartbeat_frequency
+        common.MIN_HEARTBEAT_INTERVAL = self.old_min_heartbeat_interval
         common.KILL_CURSOR_FREQUENCY = self.old_kill_cursor_frequency
+        common.EVENTS_QUEUE_FREQUENCY = self.old_events_queue_frequency
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disable()
@@ -108,12 +124,12 @@ class ClientContext(object):
             client = pymongo.MongoClient(host, port,
                                          serverSelectionTimeoutMS=100)
             client.admin.command('ismaster')  # Can we connect?
-            
+
             # If so, then reset client to defaults.
             self.client = pymongo.MongoClient(host, port)
 
         except pymongo.errors.ConnectionFailure:
-            self.client = None
+            self.client = self.rs_or_standalone_client = None
         else:
             self.connected = True
             self.ismaster = self.client.admin.command('ismaster')
@@ -127,11 +143,11 @@ class ClientContext(object):
                 self.rs_client = pymongo.MongoClient(
                     pair, replicaSet=self.replica_set_name)
 
-                nodes = [partition_node(node)
+                nodes = [partition_node(node.lower())
                          for node in self.ismaster.get('hosts', [])]
-                nodes.extend([partition_node(node)
+                nodes.extend([partition_node(node.lower())
                               for node in self.ismaster.get('passives', [])])
-                nodes.extend([partition_node(node)
+                nodes.extend([partition_node(node.lower())
                               for node in self.ismaster.get('arbiters', [])])
                 self.nodes = set(nodes)
 
@@ -350,7 +366,8 @@ class MockClientTest(unittest.TestCase):
         super(MockClientTest, self).setUp()
 
         self.client_knobs = client_knobs(
-            heartbeat_frequency=0.001)
+            heartbeat_frequency=0.001,
+            min_heartbeat_interval=0.001)
 
         self.client_knobs.enable()
 

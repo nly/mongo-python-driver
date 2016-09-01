@@ -25,22 +25,23 @@ sys.path[0:0] = [""]
 from bson.codec_options import CodecOptions
 from bson.dbref import DBRef
 from bson.objectid import ObjectId
-from bson.py3compat import u
 from bson.son import SON
 from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import (ConfigurationError,
+                            CursorNotFound,
                             DocumentTooLarge,
                             DuplicateKeyError,
                             InvalidDocument,
                             InvalidOperation,
                             OperationFailure,
                             WTimeoutError)
+from pymongo.message import _CursorAddress
 from pymongo.son_manipulator import (AutoReference,
                                      NamespaceInjector,
                                      ObjectIdShuffler,
                                      SONManipulator)
 from pymongo.write_concern import WriteConcern
-from test import client_context, qcheck, unittest
+from test import client_context, qcheck, unittest, SkipTest
 from test.test_client import IntegrationTest
 from test.utils import (joinall,
                         oid_generated_on_client,
@@ -117,7 +118,7 @@ class TestLegacy(IntegrationTest):
         db = self.db
         db.test.drop()
         self.assertEqual(0, len(list(db.test.find())))
-        doc = {"hello": u("world")}
+        doc = {"hello": u"world"}
         _id = db.test.insert(doc)
         self.assertEqual(1, len(list(db.test.find())))
         self.assertEqual(doc, db.test.find_one())
@@ -159,13 +160,13 @@ class TestLegacy(IntegrationTest):
         # Tests legacy insert.
         db = self.db
         db.drop_collection("test")
-        doc1 = {"hello": u("world")}
-        doc2 = {"hello": u("mike")}
+        doc1 = {"hello": u"world"}
+        doc2 = {"hello": u"mike"}
         self.assertEqual(db.test.find().count(), 0)
         ids = db.test.insert([doc1, doc2])
         self.assertEqual(db.test.find().count(), 2)
-        self.assertEqual(doc1, db.test.find_one({"hello": u("world")}))
-        self.assertEqual(doc2, db.test.find_one({"hello": u("mike")}))
+        self.assertEqual(doc1, db.test.find_one({"hello": u"world"}))
+        self.assertEqual(doc2, db.test.find_one({"hello": u"mike"}))
 
         self.assertEqual(2, len(ids))
         self.assertEqual(doc1["_id"], ids[0])
@@ -237,7 +238,7 @@ class TestLegacy(IntegrationTest):
 
         db.drop_collection("test")
         self.assertEqual(db.test.find().count(), 0)
-        db.test.insert(({"hello": u("world")}, {"hello": u("world")}))
+        db.test.insert(({"hello": u"world"}, {"hello": u"world"}))
         self.assertEqual(db.test.find().count(), 2)
 
         db.drop_collection("test")
@@ -915,7 +916,7 @@ class TestLegacy(IntegrationTest):
         db.test.b.remove({})
         db.test.c.remove({})
 
-        a = {"hello": u("world")}
+        a = {"hello": u"world"}
         db.test.a.save(a)
 
         b = {"test": a}
@@ -1205,6 +1206,68 @@ class TestLegacy(IntegrationTest):
 
         self.assertEqual(10001, coll.count())
         coll.drop()
+
+    def test_kill_cursors_with_cursoraddress(self):
+        if (client_context.is_mongos
+                and not client_context.version.at_least(2, 4, 7)):
+            # Old mongos sends incorrectly formatted error response when
+            # cursor isn't found, see SERVER-9738.
+            raise SkipTest("Can't test kill_cursors against old mongos")
+
+        coll = self.client.pymongo_test.test
+        coll.drop()
+
+        coll.insert_many([{'_id': i} for i in range(200)])
+        cursor = coll.find().batch_size(1)
+        next(cursor)
+        self.client.kill_cursors(
+            [cursor.cursor_id],
+            _CursorAddress(self.client.address, coll.full_name))
+
+        # Prevent killcursors from reaching the server while a getmore is in
+        # progress -- the server logs "Assertion: 16089:Cannot kill active
+        # cursor."
+        time.sleep(2)
+
+        def raises_cursor_not_found():
+            try:
+                next(cursor)
+                return False
+            except CursorNotFound:
+                return True
+
+        wait_until(raises_cursor_not_found, 'close cursor')
+
+    def test_kill_cursors_with_tuple(self):
+        if (client_context.is_mongos
+                and not client_context.version.at_least(2, 4, 7)):
+            # Old mongos sends incorrectly formatted error response when
+            # cursor isn't found, see SERVER-9738.
+            raise SkipTest("Can't test kill_cursors against old mongos")
+
+        coll = self.client.pymongo_test.test
+        coll.drop()
+
+        coll.insert_many([{'_id': i} for i in range(200)])
+        cursor = coll.find().batch_size(1)
+        next(cursor)
+        self.client.kill_cursors(
+            [cursor.cursor_id],
+            self.client.address)
+
+        # Prevent killcursors from reaching the server while a getmore is in
+        # progress -- the server logs "Assertion: 16089:Cannot kill active
+        # cursor."
+        time.sleep(2)
+
+        def raises_cursor_not_found():
+            try:
+                next(cursor)
+                return False
+            except CursorNotFound:
+                return True
+
+        wait_until(raises_cursor_not_found, 'close cursor')
 
 
 if __name__ == "__main__":

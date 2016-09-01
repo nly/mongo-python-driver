@@ -26,7 +26,7 @@ from distutils.errors import CCompilerError, DistutilsOptionError
 from distutils.errors import DistutilsPlatformError, DistutilsExecError
 from distutils.core import Extension
 
-version = "3.3.0.dev0"
+version = "3.3.0"
 
 f = open("README.rst")
 try:
@@ -229,9 +229,8 @@ http://api.mongodb.org/python/current/installation.html#osx
         else:
             warnings.warn(self.warning_message % ("The %s extension "
                                                   "module" % (name,),
-                                                  "Please use Python >= 2.6 "
-                                                  "to take advantage of the "
-                                                  "extension."))
+                                                  "PyMongo supports python "
+                                                  ">= 2.6."))
 
 ext_modules = [Extension('bson._cbson',
                          include_dirs=['bson'],
@@ -276,14 +275,6 @@ The optional C extensions are currently not supported\n
 by this python implementation.\n
 *****************************************************\n
 """)
-elif sys.byteorder == "big":
-    sys.stdout.write("""
-*****************************************************\n
-The optional C extensions are currently not supported\n
-on big endian platforms and will not be built.\n
-Performance may be degraded.\n
-*****************************************************\n
-""")
 else:
     extra_opts['ext_modules'] = ext_modules
 
@@ -311,7 +302,6 @@ setup(
         "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.2",
         "Programming Language :: Python :: 3.3",
         "Programming Language :: Python :: 3.4",
         "Programming Language :: Python :: 3.5",

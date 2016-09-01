@@ -22,7 +22,6 @@ import time
 sys.path[0:0] = [""]
 
 from bson.codec_options import CodecOptions
-from bson.py3compat import u
 from bson.son import SON
 from pymongo.common import partition_node
 from pymongo.errors import (AutoReconnect,
@@ -65,7 +64,7 @@ class TestReplicaSetClientBase(IntegrationTest):
         cls.w = client_context.w
 
         ismaster = client_context.ismaster
-        cls.hosts = set(partition_node(h) for h in ismaster['hosts'])
+        cls.hosts = set(partition_node(h.lower()) for h in ismaster['hosts'])
         cls.arbiters = set(partition_node(h)
                            for h in ismaster.get("arbiters", []))
 
@@ -76,9 +75,10 @@ class TestReplicaSetClientBase(IntegrationTest):
             if m['stateStr'] == 'PRIMARY'
         ][0]
 
-        cls.primary = partition_node(primary_info['name'])
+        cls.primary = partition_node(primary_info['name'].lower())
         cls.secondaries = set(
-            partition_node(m['name']) for m in repl_set_status['members']
+            partition_node(m['name'].lower())
+            for m in repl_set_status['members']
             if m['stateStr'] == 'SECONDARY')
 
 
@@ -228,8 +228,8 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
 
         uri = "mongodb://%slocalhost:%d,[::1]:%d" % (auth_str, port, port)
         client = MongoClient(uri, replicaSet=self.name)
-        client.pymongo_test.test.insert_one({"dummy": u("object")})
-        client.pymongo_test_bernie.test.insert_one({"dummy": u("object")})
+        client.pymongo_test.test.insert_one({"dummy": u"object"})
+        client.pymongo_test_bernie.test.insert_one({"dummy": u"object"})
 
         dbs = client.database_names()
         self.assertTrue("pymongo_test" in dbs)

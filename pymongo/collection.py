@@ -22,8 +22,7 @@ from bson.code import Code
 from bson.objectid import ObjectId
 from bson.py3compat import (_unicode,
                             integer_types,
-                            string_type,
-                            u)
+                            string_type)
 from bson.raw_bson import RawBSONDocument
 from bson.codec_options import CodecOptions
 from bson.son import SON
@@ -52,7 +51,7 @@ except ImportError:
     _ORDERED_TYPES = (SON,)
 
 _NO_OBJ_ERROR = "No matching object found"
-_UJOIN = u("%s.%s")
+_UJOIN = u"%s.%s"
 
 
 class ReturnDocument(object):
@@ -1361,11 +1360,10 @@ class Collection(common.BaseObject):
         See the MongoDB documentation for a full list of supported options by
         server version.
 
-        .. warning:: `dropDups` is not supported by MongoDB 2.7.5 or newer. The
+        .. warning:: `dropDups` is not supported by MongoDB 3.0 or newer. The
           option is silently ignored by the server and unique index builds
           using the option will fail if a duplicate value is detected.
 
-        .. note:: `expireAfterSeconds` requires server version **>= 2.2**
         .. note:: `partialFilterExpression` requires server version **>= 3.2**
 
         :Parameters:

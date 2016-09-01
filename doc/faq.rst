@@ -28,6 +28,16 @@ all other sockets are in use and the pool has reached its maximum, the
 thread pauses, waiting for a socket to be returned to the pool by another
 thread.
 
+It is possible to set the minimum number of concurrent connections to each
+server with ``minPoolSize``, which defaults to 0. The connection pool will be
+initialized with this number of sockets. If sockets are removed from the pool
+and closed, causing the total number of sockets (both in use and idle) to drop
+below the set minimum, more sockets will be added until the minimum is reached.
+
+The maximum number of milliseconds that a connection can remain idle in the
+pool before being removed and replaced can be set with ``maxIdleTime``, which
+defaults to `None` (no limit).
+
 The default configuration for a :class:`~pymongo.mongo_client.MongoClient`
 works for most applications::
 
@@ -75,7 +85,7 @@ thread, all sockets are closed.
 Does PyMongo support Python 3?
 ------------------------------
 
-PyMongo supports Python 3.x where x >= 2. See the :doc:`python3` for details.
+PyMongo supports CPython 3.3+ and PyPy3. See the :doc:`python3` for details.
 
 Does PyMongo support asynchronous frameworks like Gevent, asyncio, Tornado, or Twisted?
 ---------------------------------------------------------------------------------------
