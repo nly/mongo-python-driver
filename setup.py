@@ -26,7 +26,7 @@ from distutils.errors import CCompilerError, DistutilsOptionError
 from distutils.errors import DistutilsPlatformError, DistutilsExecError
 from distutils.core import Extension
 
-version = "3.3.0.dev0"
+version = "3.3.0"
 
 f = open("README.rst")
 try:
@@ -273,14 +273,6 @@ elif (sys.platform.startswith("java") or
 *****************************************************\n
 The optional C extensions are currently not supported\n
 by this python implementation.\n
-*****************************************************\n
-""")
-elif sys.byteorder == "big":
-    sys.stdout.write("""
-*****************************************************\n
-The optional C extensions are currently not supported\n
-on big endian platforms and will not be built.\n
-Performance may be degraded.\n
 *****************************************************\n
 """)
 else:

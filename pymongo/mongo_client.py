@@ -107,11 +107,12 @@ class MongoClient(common.BaseObject):
           read :ref:`multiprocessing` first.
 
         :Parameters:
-          - `host` (optional): hostname or IP address of the
-            instance to connect to, or a mongodb URI, or a list of
+          - `host` (optional): hostname or IP address of a single mongod or
+            mongos instance to connect to, or a mongodb URI, or a list of
             hostnames / mongodb URIs. If `host` is an IPv6 literal
             it must be enclosed in '[' and ']' characters following
-            the RFC2732 URL syntax (e.g. '[::1]' for localhost)
+            the RFC2732 URL syntax (e.g. '[::1]' for localhost). Multihomed
+            and round robin DNS addresses are **not** supported.
           - `port` (optional): port number on which to connect
           - `document_class` (optional): default class to use for
             documents returned from queries on this client
@@ -158,6 +159,9 @@ class MongoClient(common.BaseObject):
           - `socketKeepAlive`: (boolean) Whether to send periodic keep-alive
             packets on connected sockets. Defaults to ``False`` (do not send
             keep-alive packets).
+          - `heartbeatFrequencyMS`: (optional) The number of milliseconds
+            between periodic server checks, or None to accept the default
+            frequency of 10 seconds.
           - `event_listeners`: a list or tuple of event listeners. See
             :mod:`~pymongo.monitoring` for details.
 
@@ -216,14 +220,15 @@ class MongoClient(common.BaseObject):
           - `ssl_cert_reqs`: Specifies whether a certificate is required from
             the other side of the connection, and whether it will be validated
             if provided. It must be one of the three values ``ssl.CERT_NONE``
-            (certificates ignored), ``ssl.CERT_OPTIONAL``
-            (not required, but validated if provided), or ``ssl.CERT_REQUIRED``
-            (required and validated). If the value of this parameter is not
-            ``ssl.CERT_NONE`` and a value is not provided for ``ssl_ca_certs``
-            PyMongo will attempt to load system provided CA certificates.
-            If the python version in use does not support loading system CA
-            certificates then the ``ssl_ca_certs`` parameter must point
-            to a file of CA certificates. Implies ``ssl=True``. Defaults to
+            (certificates ignored), ``ssl.CERT_REQUIRED`` (certificates
+            required and validated), or ``ssl.CERT_OPTIONAL`` (the same as
+            CERT_REQUIRED, unless the server was configured to use anonymous
+            ciphers). If the value of this parameter is not ``ssl.CERT_NONE``
+            and a value is not provided for ``ssl_ca_certs`` PyMongo will
+            attempt to load system provided CA certificates. If the python
+            version in use does not support loading system CA certificates
+            then the ``ssl_ca_certs`` parameter must point to a file of CA
+            certificates. Implies ``ssl=True``. Defaults to
             ``ssl.CERT_REQUIRED`` if not provided and ``ssl=True``.
           - `ssl_ca_certs`: The ca_certs file contains a set of concatenated
             "certification authority" certificates, which are used to validate
@@ -387,7 +392,8 @@ class MongoClient(common.BaseObject):
             monitor_class=monitor_class,
             condition_class=condition_class,
             local_threshold_ms=options.local_threshold_ms,
-            server_selection_timeout=options.server_selection_timeout)
+            server_selection_timeout=options.server_selection_timeout,
+            heartbeat_frequency=options.heartbeat_frequency)
 
         self._topology = Topology(self._topology_settings)
         if connect:
