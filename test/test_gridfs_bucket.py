@@ -28,20 +28,18 @@ from bson.py3compat import StringIO, string_type
 from gridfs.errors import NoFile, CorruptGridFile
 from pymongo.errors import (ConfigurationError,
                             ConnectionFailure,
-                            ServerSelectionTimeoutError,
-                            OperationFailure)
+                            ServerSelectionTimeoutError)
 from pymongo.mongo_client import MongoClient
 from pymongo.read_preferences import ReadPreference
 from test import (client_context,
+                  unittest,
                   IntegrationTest)
 from test.test_replica_set_client import TestReplicaSetClientBase
 from test.utils import (joinall,
                         single_client,
                         one,
                         rs_client,
-                        rs_or_single_client,
-                        rs_or_single_client_noauth,
-                        remove_all_users)
+                        rs_or_single_client)
 
 
 class JustWrite(threading.Thread):
@@ -446,6 +444,11 @@ class TestGridfs(IntegrationTest):
 
 class TestGridfsBucketReplicaSet(TestReplicaSetClientBase):
 
+    @classmethod
+    @client_context.require_secondaries_count(1)
+    def setUpClass(cls):
+        super(TestGridfsBucketReplicaSet, cls).setUpClass()
+
     def test_gridfs_replica_set(self):
         rsc = rs_client(
             w=self.w,
@@ -496,9 +499,8 @@ class TestGridfsBucketReplicaSet(TestReplicaSetClientBase):
                           "test_filename", b'data')
 
     def tearDown(self):
-        rsc = client_context.rs_client
-        rsc.pymongo_test.drop_collection('fs.files')
-        rsc.pymongo_test.drop_collection('fs.chunks')
+        self.client.pymongo_test.drop_collection('fs.files')
+        self.client.pymongo_test.drop_collection('fs.chunks')
 
 
 if __name__ == "__main__":

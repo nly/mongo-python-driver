@@ -34,6 +34,7 @@ from bson.code import Code
 from bson.codec_options import (
     CodecOptions, DEFAULT_CODEC_OPTIONS, _raw_document_class)
 from bson.dbref import DBRef
+from bson.decimal128 import Decimal128
 from bson.errors import (InvalidBSON,
                          InvalidDocument,
                          InvalidStringData)
@@ -83,6 +84,7 @@ BSONCWS = b"\x0F" # Javascript code with scope
 BSONINT = b"\x10" # 32bit int
 BSONTIM = b"\x11" # Timestamp
 BSONLON = b"\x12" # 64bit int
+BSONDEC = b"\x13" # Decimal128
 BSONMIN = b"\xFF" # Min key
 BSONMAX = b"\x7F" # Max key
 
@@ -180,10 +182,13 @@ def _get_array(data, position, obj_end, opts, element_name):
         except KeyError:
             _raise_unknown_type(element_type, element_name)
         append(value)
+
+    if position != end + 1:
+        raise InvalidBSON('bad array length')
     return result, position + 1
 
 
-def _get_binary(data, position, dummy0, opts, dummy1):
+def _get_binary(data, position, obj_end, opts, dummy1):
     """Decode a BSON binary to bson.binary.Binary or python UUID."""
     length, subtype = _UNPACK_LENGTH_SUBTYPE(data[position:position + 5])
     position += 5
@@ -194,6 +199,8 @@ def _get_binary(data, position, dummy0, opts, dummy1):
             raise InvalidBSON("invalid binary (st 2) - lengths don't match!")
         length = length2
     end = position + length
+    if length < 0 or end > obj_end:
+        raise InvalidBSON('bad binary object length')
     if subtype in (3, 4):
         # Java Legacy
         uuid_representation = opts.uuid_representation
@@ -224,25 +231,19 @@ def _get_oid(data, position, dummy0, dummy1, dummy2):
 def _get_boolean(data, position, dummy0, dummy1, dummy2):
     """Decode a BSON true/false to python True/False."""
     end = position + 1
-    return data[position:end] == b"\x01", end
+    boolean_byte = data[position:end]
+    if boolean_byte == b'\x00':
+        return False, end
+    elif boolean_byte == b'\x01':
+        return True, end
+    raise InvalidBSON('invalid boolean value: %r' % boolean_byte)
 
 
 def _get_date(data, position, dummy0, opts, dummy1):
     """Decode a BSON datetime to python datetime.datetime."""
     end = position + 8
     millis = _UNPACK_LONG(data[position:end])[0]
-    diff = ((millis % 1000) + 1000) % 1000
-    seconds = (millis - diff) / 1000
-    micros = diff * 1000
-    if opts.tz_aware:
-        dt = EPOCH_AWARE + datetime.timedelta(
-            seconds=seconds, microseconds=micros)
-        if opts.tzinfo:
-            dt = dt.astimezone(opts.tzinfo)
-    else:
-        dt = EPOCH_NAIVE + datetime.timedelta(
-            seconds=seconds, microseconds=micros)
-    return dt, end
+    return _millis_to_datetime(millis, opts), end
 
 
 def _get_code(data, position, obj_end, opts, element_name):
@@ -253,9 +254,12 @@ def _get_code(data, position, obj_end, opts, element_name):
 
 def _get_code_w_scope(data, position, obj_end, opts, element_name):
     """Decode a BSON code_w_scope to bson.code.Code."""
+    code_end = position + _UNPACK_INT(data[position:position + 4])[0]
     code, position = _get_string(
-        data, position + 4, obj_end, opts, element_name)
-    scope, position = _get_object(data, position, obj_end, opts, element_name)
+        data, position + 4, code_end, opts, element_name)
+    scope, position = _get_object(data, position, code_end, opts, element_name)
+    if position != code_end:
+        raise InvalidBSON('scope outside of javascript code boundaries')
     return Code(code, scope), position
 
 
@@ -288,6 +292,12 @@ def _get_int64(data, position, dummy0, dummy1, dummy2):
     return Int64(_UNPACK_LONG(data[position:end])[0]), end
 
 
+def _get_decimal128(data, position, dummy0, dummy1, dummy2):
+    """Decode a BSON decimal128 to bson.decimal128.Decimal128."""
+    end = position + 16
+    return Decimal128.from_bid(data[position:end]), end
+
+
 # Each decoder function's signature is:
 #   - data: bytes
 #   - position: int, beginning of object in 'data' to decode
@@ -312,6 +322,7 @@ _ELEMENT_GETTER = {
     BSONINT: _get_int,
     BSONTIM: _get_timestamp,
     BSONLON: _get_int64,
+    BSONDEC: _get_decimal128,
     BSONMIN: lambda v, w, x, y, z: (MinKey(), w),
     BSONMAX: lambda v, w, x, y, z: (MaxKey(), w)}
 
@@ -336,19 +347,21 @@ def _iterate_elements(data, position, obj_end, opts):
     end = obj_end - 1
     while position < end:
         (key, value, position) = _element_to_dict(data, position, obj_end, opts)
-        yield key, value
+        yield key, value, position
 
 
 def _elements_to_dict(data, position, obj_end, opts):
     """Decode a BSON document."""
     result = opts.document_class()
+    pos = position
     temp_dict = {}
-    for key, value in _iterate_elements(data, position, obj_end, opts):
+    for key, value, pos in _iterate_elements(data, position, obj_end, opts):
         if key == '$set':
             temp_dict = dict(temp_dict, **value)
             value = temp_dict
-
         result[key] = value
+    if pos != obj_end:
+        raise InvalidBSON('bad object or element length')
     return result
 
 
@@ -549,10 +562,7 @@ def _encode_bool(name, value, dummy0, dummy1):
 
 def _encode_datetime(name, value, dummy0, dummy1):
     """Encode datetime.datetime."""
-    if value.utcoffset() is not None:
-        value = value - value.utcoffset()
-    millis = int(calendar.timegm(value.timetuple()) * 1000 +
-                 value.microsecond / 1000)
+    millis = _datetime_to_millis(value)
     return b"\x09" + name + _PACK_LONG(millis)
 
 
@@ -592,7 +602,7 @@ def _encode_code(name, value, dummy, opts):
     """Encode bson.code.Code."""
     cstring = _make_c_string(value)
     cstrlen = len(cstring)
-    if not value.scope:
+    if value.scope is None:
         return b"\x0D" + name + _PACK_INT(cstrlen) + cstring
     scope = _dict_to_bson(value.scope, False, opts, False)
     full_length = _PACK_INT(8 + cstrlen + len(scope))
@@ -621,6 +631,11 @@ def _encode_long(name, value, dummy0, dummy1):
         return b"\x12" + name + _PACK_LONG(value)
     except struct.error:
         raise OverflowError("BSON can only handle up to 8-byte ints")
+
+
+def _encode_decimal128(name, value, dummy0, dummy1):
+    """Encode bson.decimal128.Decimal128."""
+    return b"\x13" + name + value.bid
 
 
 def _encode_minkey(name, dummy0, dummy1, dummy2):
@@ -663,6 +678,7 @@ _ENCODERS = {
     SON: _encode_mapping,
     Timestamp: _encode_timestamp,
     UUIDLegacy: _encode_binary,
+    Decimal128: _encode_decimal128,
     # Special case. This will never be looked up directly.
     collections.Mapping: _encode_mapping,
 }
@@ -752,6 +768,30 @@ def _dict_to_bson(doc, check_keys, opts, top_level=True):
     return _PACK_INT(len(encoded) + 5) + encoded + b"\x00"
 if _USE_C:
     _dict_to_bson = _cbson._dict_to_bson
+
+
+def _millis_to_datetime(millis, opts):
+    """Convert milliseconds since epoch UTC to datetime."""
+    diff = ((millis % 1000) + 1000) % 1000
+    seconds = (millis - diff) / 1000
+    micros = diff * 1000
+    if opts.tz_aware:
+        dt = EPOCH_AWARE + datetime.timedelta(seconds=seconds,
+                                              microseconds=micros)
+        if opts.tzinfo:
+            dt = dt.astimezone(opts.tzinfo)
+        return dt
+    else:
+        return EPOCH_NAIVE + datetime.timedelta(seconds=seconds,
+                                                microseconds=micros)
+
+
+def _datetime_to_millis(dtm):
+    """Convert datetime to milliseconds since epoch UTC."""
+    if dtm.utcoffset() is not None:
+        dtm = dtm - dtm.utcoffset()
+    return int(calendar.timegm(dtm.timetuple()) * 1000 +
+               dtm.microsecond / 1000)
 
 
 _CODEC_OPTIONS_TYPE_ERROR = TypeError(

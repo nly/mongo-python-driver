@@ -33,10 +33,11 @@ from pymongo.server_selectors import (any_server_selector,
 from pymongo.write_concern import WriteConcern
 from test import (client_context,
                   db_user,
-                  db_pwd,
-                  host,
-                  port)
+                  db_pwd)
 from test.version import Version
+
+
+IMPOSSIBLE_WRITE_CONCERN = WriteConcern(w=len(client_context.nodes) + 1)
 
 
 class EventListener(monitoring.CommandListener):
@@ -97,63 +98,69 @@ class HeartbeatEventListener(monitoring.ServerHeartbeatListener):
         self.results.append(event)
 
 
-def _connection_string_noauth(h, p):
+def _connection_string(h, p, authenticate):
     if h.startswith("mongodb://"):
         return h
-    return "mongodb://%s:%d" % (h, p)
-
-
-def _connection_string(h, p):
-    if h.startswith("mongodb://"):
-        return h
-    elif client_context.auth_enabled:
+    elif client_context.auth_enabled and authenticate:
         return "mongodb://%s:%s@%s:%d" % (db_user, db_pwd, h, p)
     else:
-        return _connection_string_noauth(h, p)
+        return "mongodb://%s:%d" % (h, p)
 
 
-def single_client_noauth(h=host, p=port, **kwargs):
+def _mongo_client(host, port, authenticate=True, direct=False, **kwargs):
+    """Create a new client over SSL/TLS if necessary."""
+    client_options = client_context.ssl_client_options.copy()
+
+    if client_context.replica_set_name and not direct:
+        client_options['replicaSet'] = client_context.replica_set_name
+    client_options.update(kwargs)
+
+    client = MongoClient(_connection_string(host, port, authenticate), port,
+                         **client_options)
+
+    return client
+
+
+def single_client_noauth(
+        h=client_context.host, p=client_context.port, **kwargs):
     """Make a direct connection. Don't authenticate."""
-    return MongoClient(_connection_string_noauth(h, p), **kwargs)
+    return _mongo_client(h, p, authenticate=False, direct=True, **kwargs)
 
 
-def single_client(h=host, p=port, **kwargs):
+def single_client(
+        h=client_context.host, p=client_context.port, **kwargs):
     """Make a direct connection, and authenticate if necessary."""
-    return MongoClient(_connection_string(h, p), **kwargs)
+    return _mongo_client(h, p, direct=True, **kwargs)
 
 
-def rs_client_noauth(h=host, p=port, **kwargs):
+def rs_client_noauth(
+        h=client_context.host, p=client_context.port, **kwargs):
     """Connect to the replica set. Don't authenticate."""
-    return MongoClient(_connection_string_noauth(h, p),
-                       replicaSet=client_context.replica_set_name, **kwargs)
+    return _mongo_client(h, p, authenticate=False, **kwargs)
 
 
-def rs_client(h=host, p=port, **kwargs):
+def rs_client(
+        h=client_context.host, p=client_context.port, **kwargs):
     """Connect to the replica set and authenticate if necessary."""
-    return MongoClient(_connection_string(h, p),
-                       replicaSet=client_context.replica_set_name, **kwargs)
+    return _mongo_client(h, p, **kwargs)
 
 
-def rs_or_single_client_noauth(h=host, p=port, **kwargs):
+def rs_or_single_client_noauth(
+        h=client_context.host, p=client_context.port, **kwargs):
     """Connect to the replica set if there is one, otherwise the standalone.
 
     Like rs_or_single_client, but does not authenticate.
     """
-    if client_context.replica_set_name:
-        return rs_client_noauth(h, p, **kwargs)
-    else:
-        return single_client_noauth(h, p, **kwargs)
+    return _mongo_client(h, p, authenticate=False, **kwargs)
 
 
-def rs_or_single_client(h=host, p=port, **kwargs):
+def rs_or_single_client(
+        h=client_context.host, p=client_context.port, **kwargs):
     """Connect to the replica set if there is one, otherwise the standalone.
 
     Authenticates if necessary.
     """
-    if client_context.replica_set_name:
-        return rs_client(h, p, **kwargs)
-    else:
-        return single_client(h, p, **kwargs)
+    return _mongo_client(h, p, **kwargs)
 
 
 def one(s):
@@ -312,9 +319,7 @@ def enable_text_search(client):
             'setParameter', textSearchEnabled=True)
 
         for host, port in client.secondaries:
-            client = MongoClient(host, port)
-            if client_context.auth_enabled:
-                client.admin.authenticate(db_user, db_pwd)
+            client = single_client(host, port)
             client.admin.command('setParameter', textSearchEnabled=True)
 
 

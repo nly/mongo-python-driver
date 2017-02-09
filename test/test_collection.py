@@ -16,6 +16,7 @@
 
 """Test the collection module."""
 
+import contextlib
 import re
 import sys
 import threading
@@ -35,19 +36,21 @@ from bson.py3compat import itervalues
 from bson.son import SON
 from pymongo import (ASCENDING, DESCENDING, GEO2D,
                      GEOHAYSTACK, GEOSPHERE, HASHED, TEXT)
-from pymongo import MongoClient, monitoring
+from pymongo import monitoring
 from pymongo.bulk import BulkWriteError
 from pymongo.collection import Collection, ReturnDocument
 from pymongo.command_cursor import CommandCursor
 from pymongo.cursor import CursorType
 from pymongo.errors import (DocumentTooLarge,
                             DuplicateKeyError,
+                            ExecutionTimeout,
                             InvalidDocument,
                             InvalidName,
                             InvalidOperation,
                             OperationFailure,
                             WriteConcernError)
 from pymongo.message import _COMMAND_OVERHEAD, _gen_find_command
+from pymongo.mongo_client import MongoClient
 from pymongo.operations import *
 from pymongo.read_preferences import ReadPreference
 from pymongo.results import (InsertOneResult,
@@ -58,17 +61,18 @@ from pymongo.write_concern import WriteConcern
 from test.test_client import IntegrationTest
 from test.utils import (is_mongos, enable_text_search, get_pool,
                         rs_or_single_client, single_client,
-                        wait_until, EventListener)
-from test import client_context, host, port, unittest
+                        wait_until, EventListener,
+                        IMPOSSIBLE_WRITE_CONCERN)
+from test import client_context, unittest
 
 
 class TestCollectionNoConnect(unittest.TestCase):
+    """Test Collection features on a client that does not connect.
+    """
 
     @classmethod
-    @client_context.require_connection
     def setUpClass(cls):
-        client = MongoClient(host, port, connect=False)
-        cls.db = client.pymongo_test
+        cls.db = MongoClient(connect=False).pymongo_test
 
     def test_collection(self):
         self.assertRaises(TypeError, Collection, self.db, 5)
@@ -87,12 +91,6 @@ class TestCollectionNoConnect(unittest.TestCase):
         self.assertRaises(InvalidName, make_col, self.db.test, "test.")
         self.assertRaises(InvalidName, make_col, self.db.test, "tes..t")
         self.assertRaises(InvalidName, make_col, self.db.test, "tes\x00t")
-
-        self.assertTrue(isinstance(self.db.test, Collection))
-        self.assertEqual(self.db.test, self.db["test"])
-        self.assertEqual(self.db.test, Collection(self.db, "test"))
-        self.assertEqual(self.db.test.mike, self.db["test.mike"])
-        self.assertEqual(self.db.test["mike"], self.db["test.mike"])
 
     def test_getattr(self):
         coll = self.db.test
@@ -122,6 +120,36 @@ class TestCollection(IntegrationTest):
     @classmethod
     def tearDownClass(cls):
         cls.db.drop_collection("test_large_limit")
+
+    @contextlib.contextmanager
+    def write_concern_collection(self):
+        if client_context.version.at_least(3, 3, 9) and client_context.is_rs:
+            with self.assertRaises(WriteConcernError):
+                # Unsatisfiable write concern.
+                yield Collection(
+                    self.db, 'test',
+                    write_concern=WriteConcern(w=len(client_context.nodes) + 1))
+        else:
+            yield self.db.test
+
+    def test_equality(self):
+        self.assertTrue(isinstance(self.db.test, Collection))
+        self.assertEqual(self.db.test, self.db["test"])
+        self.assertEqual(self.db.test, Collection(self.db, "test"))
+        self.assertEqual(self.db.test.mike, self.db["test.mike"])
+        self.assertEqual(self.db.test["mike"], self.db["test.mike"])
+
+    @client_context.require_version_min(3, 3, 9)
+    def test_create(self):
+        # No Exception.
+        db = client_context.client.pymongo_test
+        db.create_test_no_wc.drop()
+        Collection(db, name='create_test_no_wc', create=True)
+        with self.assertRaises(OperationFailure):
+            Collection(
+                db, name='create-test-wc',
+                write_concern=IMPOSSIBLE_WRITE_CONCERN,
+                create=True)
 
     def test_drop_nonexistent_collection(self):
         self.db.drop_collection('test')
@@ -180,6 +208,9 @@ class TestCollection(IntegrationTest):
             db.test.create_indexes,
             [IndexModel('a', unique=True)])
 
+        with self.write_concern_collection() as coll:
+            coll.create_indexes([IndexModel('hello')])
+
     def test_create_index(self):
         db = self.db
 
@@ -220,6 +251,9 @@ class TestCollection(IntegrationTest):
         self.assertRaises(
             DuplicateKeyError, db.test.create_index, 'a', unique=True)
 
+        with self.write_concern_collection() as coll:
+            coll.create_index([('hello', DESCENDING)])
+
     def test_drop_index(self):
         db = self.db
         db.test.drop_indexes()
@@ -246,6 +280,9 @@ class TestCollection(IntegrationTest):
         self.assertEqual(len(db.test.index_information()), 2)
         self.assertTrue("hello_1" in db.test.index_information())
 
+        with self.write_concern_collection() as coll:
+            coll.drop_index('hello_1')
+
     def test_reindex(self):
         db = self.db
         db.drop_collection("test")
@@ -271,6 +308,9 @@ class TestCollection(IntegrationTest):
                 check_result(result)
         else:
             check_result(reindexed)
+
+        with self.write_concern_collection() as coll:
+            coll.reindex()
 
     def test_list_indexes(self):
         db = self.db
@@ -771,7 +811,6 @@ class TestCollection(IntegrationTest):
             DocumentTooLarge, coll.delete_one, {'data': large})
 
     @client_context.require_version_min(3, 1, 9, -1)
-    @client_context.require_no_auth
     def test_insert_bypass_document_validation(self):
         db = self.db
         db.test.drop()
@@ -821,7 +860,6 @@ class TestCollection(IntegrationTest):
                           bypass_document_validation=True)
 
     @client_context.require_version_min(3, 1, 9, -1)
-    @client_context.require_no_auth
     def test_replace_bypass_document_validation(self):
         db = self.db
         db.test.drop()
@@ -862,7 +900,6 @@ class TestCollection(IntegrationTest):
                           {"x": 1}, bypass_document_validation=True)
 
     @client_context.require_version_min(3, 1, 9, -1)
-    @client_context.require_no_auth
     def test_update_bypass_document_validation(self):
         db = self.db
         db.test.drop()
@@ -941,7 +978,6 @@ class TestCollection(IntegrationTest):
                           {"$inc": {"x": 1}}, bypass_document_validation=True)
 
     @client_context.require_version_min(3, 1, 9, -1)
-    @client_context.require_no_auth
     def test_bypass_document_validation_bulk_write(self):
         db = self.db
         db.test.drop()
@@ -1452,6 +1488,12 @@ class TestCollection(IntegrationTest):
         self.assertTrue(isinstance(result, CommandCursor))
         self.assertEqual([{'foo': [1, 2]}], list(result))
 
+        # Test write concern.
+        if client_context.version.at_least(2, 6):
+            out_pipeline = [pipeline, {'$out': 'output-collection'}]
+            with self.write_concern_collection() as coll:
+                coll.aggregate(out_pipeline)
+
     def test_aggregate_raw_bson(self):
         db = self.db
         db.drop_collection("test")
@@ -1482,7 +1524,7 @@ class TestCollection(IntegrationTest):
     @client_context.require_version_min(2, 5, 1)
     def test_aggregation_cursor(self):
         db = self.db
-        if client_context.replica_set_name:
+        if client_context.has_secondaries:
             # Test that getMore messages are sent to the right server.
             db = self.client.get_database(
                 db.name,
@@ -1538,7 +1580,7 @@ class TestCollection(IntegrationTest):
     def test_parallel_scan(self):
         db = self.db
         db.drop_collection("test")
-        if client_context.replica_set_name:
+        if client_context.has_secondaries:
             # Test that getMore messages are sent to the right server.
             db = self.client.get_database(
                 db.name,
@@ -1558,6 +1600,23 @@ class TestCollection(IntegrationTest):
         self.assertEqual(
             set(range(8000)),
             set(doc['_id'] for doc in docs))
+
+    @client_context.require_no_mongos
+    @client_context.require_version_min(3, 3, 10)
+    @client_context.require_test_commands
+    def test_parallel_scan_max_time_ms(self):
+            self.client.admin.command("configureFailPoint",
+                                      "maxTimeAlwaysTimeOut",
+                                      mode="alwaysOn")
+            try:
+                self.assertRaises(ExecutionTimeout,
+                                  self.db.test.parallel_scan,
+                                  3,
+                                  maxTimeMS=1)
+            finally:
+                self.client.admin.command("configureFailPoint",
+                                          "maxTimeAlwaysTimeOut",
+                                          mode="off")
 
     def test_group(self):
         db = self.db
@@ -1721,6 +1780,9 @@ class TestCollection(IntegrationTest):
         db.test.insert_one({})
         self.assertRaises(OperationFailure, db.foo.rename, "test")
         db.foo.rename("test", dropTarget=True)
+
+        with self.write_concern_collection() as coll:
+            coll.rename('foo')
 
     def test_find_one(self):
         db = self.db
@@ -1985,6 +2047,9 @@ class TestCollection(IntegrationTest):
         full_result = db.test.inline_map_reduce(map, reduce,
                                                 full_response=True)
         self.assertEqual(6, full_result["counts"]["emit"])
+
+        with self.write_concern_collection() as coll:
+            coll.map_reduce(map, reduce, 'output')
 
     def test_messages_with_unicode_collection_names(self):
         db = self.db

@@ -50,6 +50,7 @@ struct module_state {
     PyObject* UTC;
     PyTypeObject* REType;
     PyObject* BSONInt64;
+    PyObject* Decimal128;
     PyObject* Mapping;
     PyObject* CodecOptions;
 };
@@ -359,6 +360,7 @@ static int _load_python_objects(PyObject* module) {
         _load_object(&state->UTC, "bson.tz_util", "utc") ||
         _load_object(&state->Regex, "bson.regex", "Regex") ||
         _load_object(&state->BSONInt64, "bson.int64", "Int64") ||
+        _load_object(&state->Decimal128, "bson.decimal128", "Decimal128") ||
         _load_object(&state->UUID, "uuid", "UUID") ||
         _load_object(&state->Mapping, "collections", "Mapping") ||
         _load_object(&state->CodecOptions, "bson.codec_options", "CodecOptions")) {
@@ -585,6 +587,9 @@ static int _write_regex_to_buffer(
     int_flags = PyInt_AsLong(py_flags);
 #endif
     Py_DECREF(py_flags);
+    if (int_flags == -1 && PyErr_Occurred()) {
+        return 0;
+    }
     py_pattern = PyObject_GetAttrString(value, "pattern");
     if (!py_pattern) {
         return 0;
@@ -809,7 +814,7 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
                 return 0;
             }
 
-            if (!PyDict_Size(scope)) {
+            if (scope == Py_None) {
                 Py_DECREF(scope);
                 *(buffer_get_buffer(buffer) + type_byte) = 0x0D;
                 return write_string(buffer, value);
@@ -858,6 +863,9 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
             i = PyInt_AsLong(obj);
 #endif
             Py_DECREF(obj);
+            if (i == -1 && PyErr_Occurred()) {
+                return 0;
+            }
             if (!buffer_write_int32(buffer, (int32_t)i)) {
                 return 0;
             }
@@ -872,6 +880,9 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
             i = PyInt_AsLong(obj);
 #endif
             Py_DECREF(obj);
+            if (i == -1 && PyErr_Occurred()) {
+                return 0;
+            }
             if (!buffer_write_int32(buffer, (int32_t)i)) {
                 return 0;
             }
@@ -892,6 +903,31 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
                 return 0;
             }
             *(buffer_get_buffer(buffer) + type_byte) = 0x12;
+            return 1;
+        }
+    case 19:
+        {
+            /* Decimal128 */
+            const char* data;
+            PyObject* pystring = PyObject_GetAttrString(value, "bid");
+            if (!pystring) {
+                return 0;
+            }
+#if PY_MAJOR_VERSION >= 3
+            data = PyBytes_AsString(pystring);
+#else
+            data = PyString_AsString(pystring);
+#endif
+            if (!data) {
+                Py_DECREF(pystring);
+                return 0;
+            }
+            if (!buffer_write_bytes(buffer, data, 16)) {
+                Py_DECREF(pystring);
+                return 0;
+            }
+            Py_DECREF(pystring);
+            *(buffer_get_buffer(buffer) + type_byte) = 0x13;
             return 1;
         }
     case 100:
@@ -964,12 +1000,7 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
     /* No _type_marker attibute or not one of our types. */
 
     if (PyBool_Check(value)) {
-#if PY_MAJOR_VERSION >= 3
-        const long bool = PyLong_AsLong(value);
-#else
-        const long bool = PyInt_AsLong(value);
-#endif
-        const char c = bool ? 0x01 : 0x00;
+        const char c = (value == Py_True) ? 0x01 : 0x00;
         *(buffer_get_buffer(buffer) + type_byte) = 0x08;
         return buffer_write_bytes(buffer, &c, 1);
     }
@@ -1860,6 +1891,9 @@ static PyObject* get_value(PyObject* self, PyObject* name, const char* buffer,
                 }
                 Py_DECREF(to_append);
             }
+            if (*position != end) {
+                goto invalid;
+            }
             (*position)++;
             break;
         }
@@ -1868,7 +1902,7 @@ static PyObject* get_value(PyObject* self, PyObject* name, const char* buffer,
             PyObject* data;
             PyObject* st;
             PyObject* type_to_create;
-            uint32_t length;
+            uint32_t length, length2;
             unsigned char subtype;
 
             if (max < 5) {
@@ -1882,8 +1916,15 @@ static PyObject* get_value(PyObject* self, PyObject* name, const char* buffer,
 
             subtype = (unsigned char)buffer[*position + 4];
             *position += 5;
-            if (subtype == 2 && length < 4) {
-                goto invalid;
+            if (subtype == 2) {
+                if (length < 4) {
+                    goto invalid;
+                }
+                memcpy(&length2, buffer + *position, 4);
+                length2 = BSON_UINT32_FROM_LE(length2);
+                if (length2 != length - 4) {
+                    goto invalid;
+                }
             }
 #if PY_MAJOR_VERSION >= 3
             /* Python3 special case. Decode BSON binary subtype 0 to bytes. */
@@ -2020,7 +2061,19 @@ static PyObject* get_value(PyObject* self, PyObject* name, const char* buffer,
         }
     case 8:
         {
-            value = buffer[(*position)++] ? Py_True : Py_False;
+            char boolean_raw = buffer[(*position)++];
+            if (0 == boolean_raw) {
+                value = Py_False;
+            } else if (1 == boolean_raw) {
+                value = Py_True;
+            } else {
+                PyObject* InvalidBSON = _error("InvalidBSON");
+                if (InvalidBSON) {
+                    PyErr_Format(InvalidBSON, "invalid boolean value: %x", boolean_raw);
+                    Py_DECREF(InvalidBSON);
+                }
+                return NULL;
+            }
             Py_INCREF(value);
             break;
         }
@@ -2365,6 +2418,29 @@ static PyObject* get_value(PyObject* self, PyObject* name, const char* buffer,
             Py_DECREF(bson_int64_type);
             break;
         }
+    case 19:
+        {
+            PyObject* dec128;
+            if (max < 16) {
+                goto invalid;
+            }
+            if ((dec128 = _get_object(state->Decimal128,
+                                      "bson.decimal128",
+                                      "Decimal128"))) {
+                value = PyObject_CallMethod(dec128,
+                                            "from_bid",
+#if PY_MAJOR_VERSION >= 3
+                                            "y#",
+#else
+                                            "s#",
+#endif
+                                            buffer + *position,
+                                            16);
+                Py_DECREF(dec128);
+            }
+            *position += 16;
+            break;
+        }
     case 255:
         {
             PyObject* minkey_type = _get_object(state->MinKey, "bson.min_key", "MinKey");
@@ -2577,7 +2653,7 @@ static PyObject* _cbson_element_to_dict(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    result_tuple = Py_BuildValue("OOi", name, value, new_position);
+    result_tuple = Py_BuildValue("NNi", name, value, new_position);
     if (!result_tuple) {
         Py_DECREF(name);
         Py_DECREF(value);

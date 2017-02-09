@@ -12,6 +12,7 @@ If your username or password contains special characters (e.g. '/', ' ',
 or '@') you must ``%xx`` escape them for use in the MongoDB URI. PyMongo
 uses :meth:`~urllib.unquote_plus` to decode them. For example::
 
+  >>> from pymongo import MongoClient
   >>> import urllib
   >>> password = urllib.quote_plus('pass/word')
   >>> password
@@ -94,10 +95,10 @@ and newer::
   >>> import ssl
   >>> from pymongo import MongoClient
   >>> client = MongoClient('example.com',
-  ...                       ssl=True,
-  ...                       ssl_certfile='/path/to/client.pem',
-  ...                       ssl_cert_reqs=ssl.CERT_REQUIRED,
-  ...                       ssl_ca_certs='/path/to/ca.pem')
+  ...                      ssl=True,
+  ...                      ssl_certfile='/path/to/client.pem',
+  ...                      ssl_cert_reqs=ssl.CERT_REQUIRED,
+  ...                      ssl_ca_certs='/path/to/ca.pem')
   >>> client.the_database.authenticate("<X.509 derived username>",
   ...                                  mechanism='MONGODB-X509')
   True
@@ -108,11 +109,14 @@ do not have to specify a database in the URI::
 
   >>> uri = "mongodb://<X.509 derived username>@example.com/?authMechanism=MONGODB-X509"
   >>> client = MongoClient(uri,
-  ...                     ssl=True,
-  ...                     ssl_certfile='/path/to/client.pem',
-  ...                     ssl_cert_reqs=ssl.CERT_REQUIRED,
-  ...                     ssl_ca_certs='/path/to/ca.pem')
+  ...                      ssl=True,
+  ...                      ssl_certfile='/path/to/client.pem',
+  ...                      ssl_cert_reqs=ssl.CERT_REQUIRED,
+  ...                      ssl_ca_certs='/path/to/ca.pem')
   >>>
+
+.. versionchanged:: 3.4
+  When connected to MongoDB >= 3.4 the username is no longer required.
 
 .. _use_kerberos:
 

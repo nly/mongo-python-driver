@@ -1,6 +1,78 @@
 Changelog
 =========
 
+Changes in Version 3.4
+----------------------
+
+Version 3.4 implements the new server features introduced in MongoDB 3.4
+and a whole lot more:
+
+Highlights include:
+
+- Complete support for MongoDB 3.4:
+
+  - Unicode aware string comparison using :doc:`examples/collations`.
+  - Support for the new :class:`~bson.decimal128.Decimal128` BSON type.
+  - A new maxStalenessSeconds read preference option.
+  - A username is no longer required for the MONGODB-X509 authentication
+    mechanism when connected to MongoDB >= 3.4.
+  - :meth:`~pymongo.collection.Collection.parallel_scan` supports maxTimeMS.
+  - :attr:`~pymongo.write_concern.WriteConcern` is automatically
+    applied by all helpers for commands that write to the database when
+    connected to MongoDB 3.4+. This change affects the following helpers:
+
+    - :meth:`~pymongo.mongo_client.MongoClient.drop_database`
+    - :meth:`~pymongo.database.Database.create_collection`
+    - :meth:`~pymongo.database.Database.drop_collection`
+    - :meth:`~pymongo.collection.Collection.aggregate` (when using $out)
+    - :meth:`~pymongo.collection.Collection.create_indexes`
+    - :meth:`~pymongo.collection.Collection.create_index`
+    - :meth:`~pymongo.collection.Collection.drop_indexes`
+    - :meth:`~pymongo.collection.Collection.drop_indexes`
+    - :meth:`~pymongo.collection.Collection.drop_index`
+    - :meth:`~pymongo.collection.Collection.map_reduce` (when output is not
+      "inline")
+    - :meth:`~pymongo.collection.Collection.reindex`
+    - :meth:`~pymongo.collection.Collection.rename`
+
+- Improved support for logging server discovery and monitoring events. See
+  :mod:`~pymongo.monitoring` for examples.
+- Support for matching iPAddress subjectAltName values for TLS certificate
+  verification.
+- TLS compression is now explicitly disabled when possible.
+- The Server Name Indication (SNI) TLS extension is used when possible.
+- Finer control over JSON encoding/decoding with
+  :class:`~bson.json_util.JSONOptions`.
+- Allow :class:`~bson.code.Code` objects to have a scope of ``None``,
+  signifying no scope. Also allow encoding Code objects with an empty scope
+  (i.e. ``{}``).
+
+.. warning:: Starting in PyMongo 3.4, :attr:`bson.code.Code.scope` may return
+  ``None``, as the default scope is ``None`` instead of ``{}``.
+
+.. note:: PyMongo 3.4+ attempts to create sockets non-inheritable when possible
+  (i.e. it sets the close-on-exec flag on socket file descriptors). Support
+  is limited to a subset of POSIX operating systems (not including Windows) and
+  the flag usually cannot be set in a single atomic operation. CPython 3.4+
+  implements `PEP 446`_, creating all file descriptors non-inheritable by
+  default. Users that require this behavior are encouraged to upgrade to
+  CPython 3.4+.
+
+Since 3.4rc0, the max staleness option has been renamed from ``maxStalenessMS``
+to ``maxStalenessSeconds``, its smallest value has changed from twice
+``heartbeatFrequencyMS`` to 90 seconds, and its default value has changed from
+``None`` or 0 to -1.
+
+.. _PEP 446: https://www.python.org/dev/peps/pep-0446/
+
+Issues Resolved
+...............
+
+See the `PyMongo 3.4 release notes in JIRA`_ for the list of resolved issues
+in this release.
+
+.. _PyMongo 3.4 release notes in JIRA: https://jira.mongodb.org/browse/PYTHON/fixforversion/16594
+
 Changes in Version 3.3
 ----------------------
 
@@ -626,6 +698,25 @@ See the `PyMongo 3.0 release notes in JIRA`_ for the list of resolved issues
 in this release.
 
 .. _PyMongo 3.0 release notes in JIRA: https://jira.mongodb.org/browse/PYTHON/fixforversion/12501
+
+Changes in Version 2.9.4
+------------------------
+
+Version 2.9.4 fixes issues reported since the release of 2.9.3.
+
+- Fixed __repr__ for closed instances of :class:`~pymongo.mongo_client.MongoClient`.
+- Fixed :class:`~pymongo.mongo_replica_set_client.MongoReplicaSetClient` handling of
+  uuidRepresentation.
+- Fixed building and testing the documentation with python 3.x.
+- New documentation for :doc:`examples/tls` and :doc:`atlas`.
+
+Issues Resolved
+...............
+
+See the `PyMongo 2.9.4 release notes in JIRA`_ for the list of resolved issues
+in this release.
+
+.. _PyMongo 2.9.4 release notes in JIRA: https://jira.mongodb.org/browse/PYTHON/fixforversion/16885
 
 Changes in Version 2.9.3
 ------------------------

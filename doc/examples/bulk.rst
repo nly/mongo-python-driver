@@ -27,7 +27,7 @@ bulk insert operations.
 
   >>> import pymongo
   >>> db = pymongo.MongoClient().bulk_example
-  >>> db.test.insert_many([{'i': i} for i in xrange(10000)]).inserted_ids
+  >>> db.test.insert_many([{'i': i} for i in range(10000)]).inserted_ids
   [...]
   >>> db.test.count()
   10000
@@ -51,6 +51,7 @@ order provided for serial execution. The return value is a document
 describing the type and count of operations performed.
 
 .. doctest::
+  :options: +NORMALIZE_WHITESPACE
 
   >>> from pprint import pprint
   >>>
@@ -88,6 +89,7 @@ occurred and details about the failure - including the operation that caused
 the failure.
 
 .. doctest::
+  :options: +NORMALIZE_WHITESPACE
 
   >>> from pymongo.errors import BulkWriteError
   >>> bulk = db.test.initialize_ordered_bulk_op()
@@ -99,7 +101,7 @@ the failure.
   >>> try:
   ...     bulk.execute()
   ... except BulkWriteError as bwe:
-  ...     pprint(bwe.details)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+  ...     pprint(bwe.details)
   ... 
   {'nInserted': 0,
    'nMatched': 1,
@@ -109,7 +111,7 @@ the failure.
    'upserted': [],
    'writeConcernErrors': [],
    'writeErrors': [{u'code': 11000,
-                    u'errmsg': u'...E11000 duplicate key error...',
+                    u'errmsg': u'...E11000...duplicate key error...',
                     u'index': 1,
                     u'op': {'_id': 4}}]}
 
@@ -127,6 +129,7 @@ constraint on _id. Since we are doing unordered execution the second
 and fourth operations succeed.
 
 .. doctest::
+  :options: +NORMALIZE_WHITESPACE
 
   >>> bulk = db.test.initialize_unordered_bulk_op()
   >>> bulk.insert({'_id': 1})
@@ -136,7 +139,7 @@ and fourth operations succeed.
   >>> try:
   ...     bulk.execute()
   ... except BulkWriteError as bwe:
-  ...     pprint(bwe.details)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+  ...     pprint(bwe.details)
   ... 
   {'nInserted': 0,
    'nMatched': 1,
@@ -146,11 +149,11 @@ and fourth operations succeed.
    'upserted': [],
    'writeConcernErrors': [],
    'writeErrors': [{u'code': 11000,
-                    u'errmsg': u'...E11000 duplicate key error...',
+                    u'errmsg': u'...E11000...duplicate key error...',
                     u'index': 0,
                     u'op': {'_id': 1}},
                    {u'code': 11000,
-                    u'errmsg': u'...E11000 duplicate key error...',
+                    u'errmsg': u'...E11000...duplicate key error...',
                     u'index': 2,
                     u'op': {'_id': 3}}]}
 
@@ -165,6 +168,7 @@ errors (e.g. wtimeout) will be reported after all operations are attempted,
 regardless of execution order.
 
 .. doctest::
+  :options: +NORMALIZE_WHITESPACE
 
   >>> bulk = db.test.initialize_ordered_bulk_op()
   >>> bulk.insert({'a': 0})
@@ -182,7 +186,7 @@ regardless of execution order.
    'nRemoved': 0,
    'nUpserted': 0,
    'upserted': [],
-   'writeConcernErrors': [{u'code': 64,
+   'writeConcernErrors': [{u'code': 64...
                            u'errInfo': {u'wtimeout': True},
                            u'errmsg': u'waiting for replication timed out'}],
    'writeErrors': []}

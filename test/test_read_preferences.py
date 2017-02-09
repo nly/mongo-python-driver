@@ -1,4 +1,4 @@
-# Copyright 2011-2015 MongoDB, Inc.
+# Copyright 2011-2016 MongoDB, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,23 +24,21 @@ sys.path[0:0] = [""]
 
 from bson.py3compat import MAXSIZE
 from bson.son import SON
-from pymongo.errors import ConfigurationError
+from pymongo.errors import ConfigurationError, OperationFailure
 from pymongo.message import _maybe_add_read_preference
 from pymongo.mongo_client import MongoClient
 from pymongo.read_preferences import (ReadPreference, MovingAverage,
                                       Primary, PrimaryPreferred,
                                       Secondary, SecondaryPreferred,
-                                      Nearest, _ServerMode)
+                                      Nearest)
 from pymongo.server_description import ServerDescription
-from pymongo.server_selectors import readable_server_selector
+from pymongo.server_selectors import readable_server_selector, Selection
 from pymongo.server_type import SERVER_TYPE
 from pymongo.write_concern import WriteConcern
 
 from test.test_replica_set_client import TestReplicaSetClientBase
 from test import (SkipTest,
                   client_context,
-                  host,
-                  port,
                   unittest,
                   db_user,
                   db_pwd)
@@ -48,8 +46,25 @@ from test.utils import connected, single_client, one, wait_until, rs_client
 from test.version import Version
 
 
+class TestSelections(unittest.TestCase):
+
+    @client_context.require_connection
+    def test_bool(self):
+        client = single_client()
+
+        wait_until(lambda: client.address, "discover primary")
+        selection = Selection.from_topology_description(
+            client._topology.description)
+
+        self.assertTrue(selection)
+        self.assertFalse(selection.with_server_descriptions([]))
+
+
 class TestReadPreferenceObjects(unittest.TestCase):
-    prefs = [Primary(), Secondary(), Nearest(tag_sets=[{'a': 1}, {'b': 2}])]
+    prefs = [Primary(),
+             Secondary(),
+             Nearest(tag_sets=[{'a': 1}, {'b': 2}]),
+             SecondaryPreferred(max_staleness=30)]
 
     def test_pickle(self):
         for pref in self.prefs:
@@ -61,6 +76,11 @@ class TestReadPreferenceObjects(unittest.TestCase):
 
 
 class TestReadPreferencesBase(TestReplicaSetClientBase):
+
+    @classmethod
+    @client_context.require_secondaries_count(1)
+    def setUpClass(cls):
+        super(TestReadPreferencesBase, cls).setUpClass()
 
     def setUp(self):
         super(TestReadPreferencesBase, self).setUp()
@@ -143,6 +163,7 @@ class TestSingleSlaveOk(TestReadPreferencesBase):
 
 
 class TestReadPreferences(TestReadPreferencesBase):
+
     def test_mode_validation(self):
         for mode in (ReadPreference.PRIMARY,
                      ReadPreference.PRIMARY_PREFERRED,
@@ -158,14 +179,6 @@ class TestReadPreferences(TestReadPreferencesBase):
             rs_client, read_preference='foo')
 
     def test_tag_sets_validation(self):
-        # Can't use tags with PRIMARY
-        self.assertRaises(ConfigurationError, _ServerMode,
-                          0, tag_sets=[{'k': 'v'}])
-
-        # ... but empty tag sets are ok with PRIMARY
-        self.assertRaises(ConfigurationError, _ServerMode,
-                          0, tag_sets=[{}])
-
         S = Secondary(tag_sets=[{}])
         self.assertEqual(
             [{}],
@@ -288,7 +301,9 @@ class TestReadPreferences(TestReadPreferencesBase):
 class ReadPrefTester(MongoClient):
     def __init__(self, *args, **kwargs):
         self.has_read_from = set()
-        super(ReadPrefTester, self).__init__(*args, **kwargs)
+        client_options = client_context.ssl_client_options.copy()
+        client_options.update(kwargs)
+        super(ReadPrefTester, self).__init__(*args, **client_options)
 
     @contextlib.contextmanager
     def _socket_for_reads(self, read_preference):
@@ -313,10 +328,11 @@ _PREF_MAP = [
 class TestCommandAndReadPreference(TestReplicaSetClientBase):
 
     @classmethod
+    @client_context.require_secondaries_count(1)
     def setUpClass(cls):
         super(TestCommandAndReadPreference, cls).setUpClass()
         cls.c = ReadPrefTester(
-            '%s:%s' % (host, port),
+            client_context.pair,
             replicaSet=cls.name,
             # Ignore round trip times, to test ReadPreference modes only.
             localThresholdMS=1000*1000)
@@ -439,6 +455,86 @@ class TestMovingAverage(unittest.TestCase):
 
 class TestMongosAndReadPreference(unittest.TestCase):
 
+    def test_read_preference_document(self):
+
+        pref = Primary()
+        self.assertEqual(
+            pref.document,
+            {'mode': 'primary'})
+
+        pref = PrimaryPreferred()
+        self.assertEqual(
+            pref.document,
+            {'mode': 'primaryPreferred'})
+        pref = PrimaryPreferred(tag_sets=[{'dc': 'sf'}])
+        self.assertEqual(
+            pref.document,
+            {'mode': 'primaryPreferred', 'tags': [{'dc': 'sf'}]})
+        pref = PrimaryPreferred(
+            tag_sets=[{'dc': 'sf'}], max_staleness=30)
+        self.assertEqual(
+            pref.document,
+            {'mode': 'primaryPreferred',
+             'tags': [{'dc': 'sf'}],
+             'maxStalenessSeconds': 30})
+
+        pref = Secondary()
+        self.assertEqual(
+            pref.document,
+            {'mode': 'secondary'})
+        pref = Secondary(tag_sets=[{'dc': 'sf'}])
+        self.assertEqual(
+            pref.document,
+            {'mode': 'secondary', 'tags': [{'dc': 'sf'}]})
+        pref = Secondary(
+            tag_sets=[{'dc': 'sf'}], max_staleness=30)
+        self.assertEqual(
+            pref.document,
+            {'mode': 'secondary',
+             'tags': [{'dc': 'sf'}],
+             'maxStalenessSeconds': 30})
+
+        pref = SecondaryPreferred()
+        self.assertEqual(
+            pref.document,
+            {'mode': 'secondaryPreferred'})
+        pref = SecondaryPreferred(tag_sets=[{'dc': 'sf'}])
+        self.assertEqual(
+            pref.document,
+            {'mode': 'secondaryPreferred', 'tags': [{'dc': 'sf'}]})
+        pref = SecondaryPreferred(
+            tag_sets=[{'dc': 'sf'}], max_staleness=30)
+        self.assertEqual(
+            pref.document,
+            {'mode': 'secondaryPreferred',
+             'tags': [{'dc': 'sf'}],
+             'maxStalenessSeconds': 30})
+
+        pref = Nearest()
+        self.assertEqual(
+            pref.document,
+            {'mode': 'nearest'})
+        pref = Nearest(tag_sets=[{'dc': 'sf'}])
+        self.assertEqual(
+            pref.document,
+            {'mode': 'nearest', 'tags': [{'dc': 'sf'}]})
+        pref = Nearest(
+            tag_sets=[{'dc': 'sf'}], max_staleness=30)
+        self.assertEqual(
+            pref.document,
+            {'mode': 'nearest',
+             'tags': [{'dc': 'sf'}],
+             'maxStalenessSeconds': 30})
+
+        with self.assertRaises(TypeError):
+            Nearest(max_staleness=1.5)  # Float is prohibited.
+
+        with self.assertRaises(ValueError):
+            Nearest(max_staleness=0)
+
+        with self.assertRaises(ValueError):
+            Nearest(max_staleness=-2)
+
     def test_maybe_add_read_preference(self):
 
         # Primary doesn't add $readPreference
@@ -463,11 +559,16 @@ class TestMongosAndReadPreference(unittest.TestCase):
         self.assertEqual(
             out, SON([("$query", {}), ("$readPreference", pref.document)]))
 
-        # SecondaryPreferred without tag_sets doesn't add $readPreference
+        # SecondaryPreferred without tag_sets or max_staleness doesn't add
+        # $readPreference
         pref = SecondaryPreferred()
         out = _maybe_add_read_preference({}, pref)
         self.assertEqual(out, {})
         pref = SecondaryPreferred(tag_sets=[{'dc': 'nyc'}])
+        out = _maybe_add_read_preference({}, pref)
+        self.assertEqual(
+            out, SON([("$query", {}), ("$readPreference", pref.document)]))
+        pref = SecondaryPreferred(max_staleness=120)
         out = _maybe_add_read_preference({}, pref)
         self.assertEqual(
             out, SON([("$query", {}), ("$readPreference", pref.document)]))
@@ -526,6 +627,39 @@ class TestMongosAndReadPreference(unittest.TestCase):
             self.assertEqual(first_id, results[-1]["_id"])
             self.assertEqual(last_id, results[0]["_id"])
 
+    @client_context.require_mongos
+    @client_context.require_version_min(3, 3, 12)
+    def test_mongos_max_staleness(self):
+        # Sanity check that we're sending maxStalenessSeconds
+        coll = client_context.client.pymongo_test.get_collection(
+            "test", read_preference=SecondaryPreferred(max_staleness=120))
+        # No error
+        coll.find_one()
+
+        coll = client_context.client.pymongo_test.get_collection(
+            "test", read_preference=SecondaryPreferred(max_staleness=10))
+        try:
+            coll.find_one()
+        except OperationFailure as exc:
+            self.assertEqual(160, exc.code)
+        else:
+            self.fail("mongos accepted invalid staleness")
+
+        coll = single_client(
+            readPreference='secondaryPreferred',
+            maxStalenessSeconds=120).pymongo_test.test
+        # No error
+        coll.find_one()
+
+        coll = single_client(
+            readPreference='secondaryPreferred',
+            maxStalenessSeconds=10).pymongo_test.test
+        try:
+            coll.find_one()
+        except OperationFailure as exc:
+            self.assertEqual(160, exc.code)
+        else:
+            self.fail("mongos accepted invalid staleness")
 
 if __name__ == "__main__":
     unittest.main()

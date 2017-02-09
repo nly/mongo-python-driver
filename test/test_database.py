@@ -29,8 +29,7 @@ from bson.dbref import DBRef
 from bson.objectid import ObjectId
 from bson.py3compat import string_type, text_type, PY3
 from bson.son import SON
-from pymongo import (MongoClient,
-                     ALL,
+from pymongo import (ALL,
                      auth,
                      OFF,
                      SLOW_ONLY,
@@ -41,21 +40,22 @@ from pymongo.errors import (CollectionInvalid,
                             ConfigurationError,
                             ExecutionTimeout,
                             InvalidName,
-                            OperationFailure)
+                            OperationFailure,
+                            WriteConcernError)
+from pymongo.mongo_client import MongoClient
 from pymongo.read_concern import ReadConcern
 from pymongo.read_preferences import ReadPreference
 from pymongo.write_concern import WriteConcern
 from test import (client_context,
                   SkipTest,
                   unittest,
-                  host,
-                  port,
                   IntegrationTest)
 from test.utils import (ignore_deprecations,
                         remove_all_users,
                         rs_or_single_client_noauth,
                         rs_or_single_client,
-                        server_started_with_auth)
+                        server_started_with_auth,
+                        IMPOSSIBLE_WRITE_CONCERN)
 
 
 if PY3:
@@ -63,11 +63,12 @@ if PY3:
 
 
 class TestDatabaseNoConnect(unittest.TestCase):
+    """Test Database features on a client that does not connect.
+    """
 
     @classmethod
-    @client_context.require_connection
     def setUpClass(cls):
-        cls.client = MongoClient(host, port, connect=False)
+        cls.client = MongoClient(connect=False)
 
     def test_name(self):
         self.assertRaises(TypeError, Database, self.client, 4)
@@ -77,23 +78,6 @@ class TestDatabaseNoConnect(unittest.TestCase):
         self.assertRaises(InvalidName, Database,
                           self.client, u"my\u0000db")
         self.assertEqual("name", Database(self.client, "name").name)
-
-    def test_equality(self):
-        self.assertNotEqual(Database(self.client, "test"),
-                            Database(self.client, "mike"))
-        self.assertEqual(Database(self.client, "test"),
-                         Database(self.client, "test"))
-
-        # Explicitly test inequality
-        self.assertFalse(Database(self.client, "test") !=
-                         Database(self.client, "test"))
-
-    def test_get_coll(self):
-        db = Database(self.client, "pymongo_test")
-        self.assertEqual(db.test, db["test"])
-        self.assertEqual(db.test, Collection(db, "test"))
-        self.assertNotEqual(db.test, Collection(db, "mike"))
-        self.assertEqual(db.test.mike, db["test.mike"])
 
     def test_get_collection(self):
         codec_options = CodecOptions(tz_aware=True)
@@ -126,6 +110,23 @@ class TestDatabaseNoConnect(unittest.TestCase):
 
 
 class TestDatabase(IntegrationTest):
+
+    def test_equality(self):
+        self.assertNotEqual(Database(self.client, "test"),
+                            Database(self.client, "mike"))
+        self.assertEqual(Database(self.client, "test"),
+                         Database(self.client, "test"))
+
+        # Explicitly test inequality
+        self.assertFalse(Database(self.client, "test") !=
+                         Database(self.client, "test"))
+
+    def test_get_coll(self):
+        db = Database(self.client, "pymongo_test")
+        self.assertEqual(db.test, db["test"])
+        self.assertEqual(db.test, Collection(db, "test"))
+        self.assertNotEqual(db.test, Collection(db, "mike"))
+        self.assertEqual(db.test.mike, db["test.mike"])
 
     def test_repr(self):
         self.assertEqual(repr(Database(self.client, "pymongo_test")),
@@ -218,6 +219,12 @@ class TestDatabase(IntegrationTest):
         db.test.drop()
 
         db.drop_collection(db.test.doesnotexist)
+
+        if client_context.version.at_least(3, 3, 9) and client_context.is_rs:
+            db_wc = Database(self.client, 'pymongo_test',
+                             write_concern=IMPOSSIBLE_WRITE_CONCERN)
+            with self.assertRaises(WriteConcernError):
+                db_wc.drop_collection('test')
 
     def test_validate_collection(self):
         db = self.client.pymongo_test
@@ -811,6 +818,7 @@ class TestDatabase(IntegrationTest):
 
     @client_context.require_version_min(2, 5, 3, -1)
     @client_context.require_test_commands
+    @client_context.require_no_mongos
     def test_command_max_time_ms(self):
         self.client.admin.command("configureFailPoint",
                                   "maxTimeAlwaysTimeOut",

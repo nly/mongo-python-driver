@@ -56,7 +56,8 @@ dependency can be installed automatically along with PyMongo::
 
   $ python -m pip install pymongo[gssapi]
 
-TLS / SSL support may require `certifi
+TLS / SSL support may require `ipaddress
+<https://pypi.python.org/pypi/ipaddress>`_ and `certifi
 <https://pypi.python.org/pypi/certifi>`_ or `wincertstore
 <https://pypi.python.org/pypi/wincertstore>`_ depending on the Python
 version in use. The necessary dependencies can be installed along with
@@ -210,7 +211,7 @@ PyMongo source directory::
   $ python setup.py bdist_egg
 
 The egg package can be found in the dist/ subdirectory. The file name will
-resemble “pymongo-3.1-py2.7-linux-x86_64.egg” but may have a different name
+resemble “pymongo-3.4-py2.7-linux-x86_64.egg” but may have a different name
 depending on your platform and the version of python you use to compile.
 
 .. warning::
@@ -223,7 +224,7 @@ depending on your platform and the version of python you use to compile.
 Copy this file to the target system and issue the following command to install the
 package::
 
-  $ sudo python -m easy_install pymongo-3.1-py2.7-linux-x86_64.egg
+  $ sudo python -m easy_install pymongo-3.4-py2.7-linux-x86_64.egg
 
 Installing a beta or release candidate
 --------------------------------------
@@ -234,9 +235,9 @@ but can be found on the
 `github tags page <https://github.com/mongodb/mongo-python-driver/tags>`_.
 They can be installed by passing the full URL for the tag to pip::
 
-  $ python -m pip install https://github.com/mongodb/mongo-python-driver/archive/3.2rc0.tar.gz
+  $ python -m pip install https://github.com/mongodb/mongo-python-driver/archive/3.4rc0.tar.gz
 
 or easy_install::
 
-  $ python -m easy_install https://github.com/mongodb/mongo-python-driver/archive/3.2rc0.tar.gz
+  $ python -m easy_install https://github.com/mongodb/mongo-python-driver/archive/3.4rc0.tar.gz
 

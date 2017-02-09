@@ -391,6 +391,11 @@ class TestBSON(unittest.TestCase):
                          b"=\x00\x00\x00\x0f$field\x000\x00\x00\x00\x1f\x00"
                          b"\x00\x00return function(){ return x; }\x00\t\x00"
                          b"\x00\x00\x08x\x00\x00\x00\x00")
+        unicode_empty_scope = Code(u"function(){ return 'héllo';}", {})
+        self.assertEqual(BSON.encode({'$field': unicode_empty_scope}),
+                         b"8\x00\x00\x00\x0f$field\x00+\x00\x00\x00\x1e\x00"
+                         b"\x00\x00function(){ return 'h\xc3\xa9llo';}\x00\x05"
+                         b"\x00\x00\x00\x00\x00")
         a = ObjectId(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B")
         self.assertEqual(BSON.encode({"oid": a}),
                          b"\x16\x00\x00\x00\x07\x6F\x69\x64\x00\x00\x01\x02"
@@ -403,13 +408,13 @@ class TestBSON(unittest.TestCase):
 
     def test_unknown_type(self):
         # Repr value differs with major python version
-        part = "type %r for fieldname 'foo'" % (b'\x13',)
+        part = "type %r for fieldname 'foo'" % (b'\x14',)
         docs = [
-            b'\x0e\x00\x00\x00\x13foo\x00\x01\x00\x00\x00\x00',
-            (b'\x16\x00\x00\x00\x04foo\x00\x0c\x00\x00\x00\x130'
+            b'\x0e\x00\x00\x00\x14foo\x00\x01\x00\x00\x00\x00',
+            (b'\x16\x00\x00\x00\x04foo\x00\x0c\x00\x00\x00\x140'
              b'\x00\x01\x00\x00\x00\x00\x00'),
             (b' \x00\x00\x00\x04bar\x00\x16\x00\x00\x00\x030\x00\x0e\x00\x00'
-             b'\x00\x13foo\x00\x01\x00\x00\x00\x00\x00\x00')]
+             b'\x00\x14foo\x00\x01\x00\x00\x00\x00\x00\x00')]
         for bs in docs:
             try:
                 bson.BSON(bs).decode()
@@ -553,21 +558,15 @@ class TestBSON(unittest.TestCase):
             # binary subtype 0.
             self.assertRaises(InvalidStringData, BSON.encode,
                               {"lalala": '\xf4\xe0\xf0\xe1\xc0 Color Touch'})
-        evil_list = {'a': []}
-        evil_list['a'].append(evil_list)
-        evil_dict = {}
-        evil_dict['a'] = evil_dict
         # Work around what seems like a regression in python 3.5.0.
         # See http://bugs.python.org/issue25222
-        # 100 is an arbitrary choice. The default is 1000 on the machines
-        # I have access to.
-        depth = sys.getrecursionlimit()
-        sys.setrecursionlimit(100)
-        try:
+        if sys.version_info[:2] < (3, 5):
+            evil_list = {'a': []}
+            evil_list['a'].append(evil_list)
+            evil_dict = {}
+            evil_dict['a'] = evil_dict
             for evil_data in [evil_dict, evil_list]:
-                self.assertRaises(RuntimeError, BSON.encode, evil_data)
-        finally:
-            sys.setrecursionlimit(depth)
+                self.assertRaises(Exception, BSON.encode, evil_data)
 
     def test_overflow(self):
         self.assertTrue(BSON.encode({"x": long(9223372036854775807)}))

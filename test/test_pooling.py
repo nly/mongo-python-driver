@@ -29,13 +29,12 @@ from pymongo.errors import (AutoReconnect,
 
 sys.path[0:0] = [""]
 
-from pymongo.network import socket_closed
+from pymongo.network import SocketChecker
 from pymongo.pool import Pool, PoolOptions
-from test import host, port, SkipTest, unittest, client_context
+from test import client_context, unittest
 from test.utils import (get_pool,
                         joinall,
                         delay,
-                        one,
                         rs_or_single_client)
 
 
@@ -162,21 +161,28 @@ class _TestPoolingBase(unittest.TestCase):
         db.unique.insert_one({"_id": "jesse"})
         db.test.insert_many([{} for _ in range(10)])
 
-    def create_pool(self, pair=(host, port), *args, **kwargs):
+    def create_pool(
+            self,
+            pair=(client_context.host, client_context.port),
+            *args,
+            **kwargs):
+        # Start the pool with the correct ssl options.
+        pool_options = client_context.client._topology_settings.pool_options
+        kwargs['ssl_context'] = pool_options.ssl_context
+        kwargs['ssl_match_hostname'] = pool_options.ssl_match_hostname
         return Pool(pair, PoolOptions(*args, **kwargs))
 
 
 class TestPooling(_TestPoolingBase):
     def test_max_pool_size_validation(self):
+        host, port = client_context.host, client_context.port
         self.assertRaises(
-            ValueError, MongoClient, host=host, port=port,
-            maxPoolSize=-1)
+            ValueError, MongoClient, host=host, port=port, maxPoolSize=-1)
 
         self.assertRaises(
-            ValueError, MongoClient, host=host, port=port,
-            maxPoolSize='foo')
+            ValueError, MongoClient, host=host, port=port, maxPoolSize='foo')
 
-        c = MongoClient(host=host, port=port, maxPoolSize=100)
+        c = MongoClient(host=host, port=port, maxPoolSize=100, connect=False)
         self.assertEqual(c.max_pool_size, 100)
 
     def test_no_disconnect(self):
@@ -230,7 +236,8 @@ class TestPooling(_TestPoolingBase):
             # Simulate a closed socket without telling the SocketInfo it's
             # closed.
             sock_info.sock.close()
-            self.assertTrue(socket_closed(sock_info.sock))
+            self.assertTrue(
+                cx_pool.socket_checker.socket_closed(sock_info.sock))
 
         with cx_pool.get_socket({}) as new_sock_info:
             self.assertEqual(0, len(cx_pool.sockets))
@@ -244,10 +251,29 @@ class TestPooling(_TestPoolingBase):
 
     def test_socket_closed(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((host, port))
-        self.assertFalse(socket_closed(s))
+        s.connect((client_context.host, client_context.port))
+        socket_checker = SocketChecker()
+        self.assertFalse(socket_checker.socket_closed(s))
         s.close()
-        self.assertTrue(socket_closed(s))
+        self.assertTrue(socket_checker.socket_closed(s))
+
+    def test_socket_closed_thread_safe(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((client_context.host, client_context.port))
+        socket_checker = SocketChecker()
+
+        def check_socket():
+            for _ in range(1000):
+                self.assertFalse(socket_checker.socket_closed(s))
+
+        threads = []
+        for i in range(3):
+            thread = threading.Thread(target=check_socket)
+            thread.start()
+            threads.append(thread)
+
+        for thread in threads:
+            thread.join()
 
     def test_return_socket_after_reset(self):
         pool = self.create_pool()
@@ -287,7 +313,7 @@ class TestPooling(_TestPoolingBase):
         wait_queue_timeout = 2  # Seconds
         pool = self.create_pool(
             max_pool_size=1, wait_queue_timeout=wait_queue_timeout)
-        
+
         with pool.get_socket({}) as sock_info:
             start = time.time()
             with self.assertRaises(ConnectionFailure):
@@ -305,7 +331,7 @@ class TestPooling(_TestPoolingBase):
     def test_no_wait_queue_timeout(self):
         # Verify get_socket() with no wait_queue_timeout blocks forever.
         pool = self.create_pool(max_pool_size=1)
-        
+
         # Reach max_size.
         with pool.get_socket({}) as s1:
             t = SocketGetter(self.c, pool)

@@ -9,6 +9,40 @@ Is PyMongo thread-safe?
 PyMongo is thread-safe and provides built-in connection pooling
 for threaded applications.
 
+.. _pymongo-fork-safe:
+
+Is PyMongo fork-safe?
+---------------------
+
+PyMongo is not fork-safe. Care must be taken when using instances of
+:class:`~pymongo.mongo_client.MongoClient` with ``fork()``. Specifically,
+instances of MongoClient must not be copied from a parent process to
+a child process. Instead, the parent process and each child process must
+create their own instances of MongoClient. Instances of MongoClient copied from
+the parent process have a high probability of deadlock in the child process due
+to the inherent incompatibilities between ``fork()``, threads, and locks
+described :ref:`below <pymongo-fork-safe-details>`. PyMongo will attempt to
+issue a warning if there is a chance of this deadlock occurring.
+
+.. _pymongo-fork-safe-details:
+
+MongoClient spawns multiple threads to run background tasks such as monitoring
+connected servers. These threads share state that is protected by instances of
+:class:`~threading.Lock`, which are themselves `not fork-safe`_. The
+driver is therefore subject to the same limitations as any other multithreaded
+code that uses :class:`~threading.Lock` (and mutexes in general). One of these
+limitations is that the locks become useless after ``fork()``. During the fork,
+all locks are copied over to the child process in the same state as they were
+in the parent: if they were locked, the copied locks are also locked. The child
+created by ``fork()`` only has one thread, so any locks that were taken out by
+other threads in the parent will never be released in the child. The next time
+the child process attempts to acquire one of these locks, deadlock occurs.
+
+For a long but interesting read about the problems of Python locks in
+multithreaded contexts with ``fork()``, see http://bugs.python.org/issue6721.
+
+.. _not fork-safe: http://bugs.python.org/issue6721
+
 .. _connection-pooling:
 
 How does connection pooling work in PyMongo?
@@ -43,7 +77,7 @@ works for most applications::
 
     client = MongoClient(host, port)
 
-Create this client **once** when your program starts up, and reuse it for all
+Create this client **once** for each process, and reuse it for all
 operations. It is a common mistake to create a new client for each request,
 which is very inefficient.
 
@@ -180,19 +214,15 @@ PyMongo represents BSON documents as Python dicts by default, and the order
 of keys in dicts is not defined. That is, a dict declared with the "a" key
 first is the same, to Python, as one with "b" first:
 
-.. doctest:: key-order
-
-  >>> print {'a': 1.0, 'b': 1.0}
+  >>> print({'a': 1.0, 'b': 1.0})
   {'a': 1.0, 'b': 1.0}
-  >>> print {'b': 1.0, 'a': 1.0}
+  >>> print({'b': 1.0, 'a': 1.0})
   {'a': 1.0, 'b': 1.0}
 
 Therefore, Python dicts are not guaranteed to show keys in the order they are
 stored in BSON. Here, "a" is shown before "b":
 
-.. doctest:: key-order
-
-  >>> print collection.find_one()
+  >>> print(collection.find_one())
   {u'_id': 1.0, u'subdocument': {u'a': 1.0, u'b': 1.0}}
 
 To preserve order when reading BSON, use the :class:`~bson.son.SON` class,
@@ -200,10 +230,11 @@ which is a dict that remembers its key order. First, get a handle to the
 collection, configured to use :class:`~bson.son.SON` instead of dict:
 
 .. doctest:: key-order
+  :options: +NORMALIZE_WHITESPACE
 
   >>> from bson import CodecOptions, SON
   >>> opts = CodecOptions(document_class=SON)
-  >>> opts  # doctest: +NORMALIZE_WHITESPACE
+  >>> opts
   CodecOptions(document_class=<class 'bson.son.SON'>,
                tz_aware=False,
                uuid_representation=PYTHON_LEGACY,
@@ -216,7 +247,7 @@ Now, documents and subdocuments in query results are represented with
 
 .. doctest:: key-order
 
-  >>> print collection_son.find_one()
+  >>> print(collection_son.find_one())
   SON([(u'_id', 1.0), (u'subdocument', SON([(u'b', 1.0), (u'a', 1.0)]))])
 
 The subdocument's actual storage layout is now visible: "b" is before "a".
@@ -226,14 +257,10 @@ serialized **to** BSON. But MongoDB considers subdocuments equal only if their
 keys have the same order. So if you use a dict to query on a subdocument it may
 not match:
 
-.. doctest:: key-order
-
   >>> collection.find_one({'subdocument': {'a': 1.0, 'b': 1.0}}) is None
   True
 
 Swapping the key order in your query makes no difference:
-
-.. doctest:: key-order
 
   >>> collection.find_one({'subdocument': {'b': 1.0, 'a': 1.0}}) is None
   True
@@ -241,8 +268,6 @@ Swapping the key order in your query makes no difference:
 ... because, as we saw above, Python considers the two dicts the same.
 
 There are two solutions. First, you can match the subdocument field-by-field:
-
-.. doctest:: key-order
 
   >>> collection.find_one({'subdocument.a': 1.0,
   ...                      'subdocument.b': 1.0})
@@ -254,8 +279,6 @@ in BSON. Additionally, this query now matches subdocuments with additional
 keys besides "a" and "b", whereas the previous query required an exact match.
 
 The second solution is to use a :class:`~bson.son.SON` to specify the key order:
-
-.. doctest:: key-order
 
   >>> query = {'subdocument': SON([('b', 1.0), ('a', 1.0)])}
   >>> collection.find_one(query)
@@ -283,11 +306,15 @@ timeouts can be turned off entirely. Pass ``no_cursor_timeout=True`` to
 
 How can I store :mod:`decimal.Decimal` instances?
 -------------------------------------------------
-MongoDB only supports IEEE 754 floating points - the same as the
-Python float type. The only way PyMongo could store Decimal instances
-would be to convert them to this standard, so you'd really only be
-storing floats anyway - we force users to do this conversion
-explicitly so that they are aware that it is happening.
+
+PyMongo >= 3.4 supports the Decimal128 BSON type introduced in MongoDB 3.4.
+See :mod:`~bson.decimal128` for more information.
+
+MongoDB <= 3.2 only supports IEEE 754 floating points - the same as the
+Python float type. The only way PyMongo could store Decimal instances to
+these versions of MongoDB would be to convert them to this standard, so
+you'd really only be storing floats anyway - we force users to do this
+conversion explicitly so that they are aware that it is happening.
 
 I'm saving ``9.99`` but when I query my document contains ``9.9900000000000002`` - what's going on here?
 --------------------------------------------------------------------------------------------------------
@@ -408,11 +435,19 @@ Yes. See the configuration guide for :ref:`pymongo-and-mod_wsgi`.
 
 How can I use something like Python's :mod:`json` module to encode my documents to JSON?
 ----------------------------------------------------------------------------------------
-The :mod:`json` module won't work out of the box with all documents
-from PyMongo as PyMongo supports some special types (like
-:class:`~bson.objectid.ObjectId` and :class:`~bson.dbref.DBRef`)
-that are not supported in JSON. We've added some utilities for working
-with JSON in the :mod:`~bson.json_util` module.
+:mod:`~bson.json_util` is PyMongo's built in, flexible tool for using
+Python's :mod:`json` module with BSON documents and `MongoDB Extended JSON
+<https://docs.mongodb.com/manual/reference/mongodb-extended-json/>`_. The
+:mod:`json` module won't work out of the box with all documents from PyMongo
+as PyMongo supports some special types (like :class:`~bson.objectid.ObjectId`
+and :class:`~bson.dbref.DBRef`) that are not supported in JSON.
+
+`python-bsonjs <https://pypi.python.org/pypi/python-bsonjs>`_ is a fast
+BSON to MongoDB Extended JSON converter built on top of
+`libbson <https://github.com/mongodb/libbson>`_. `python-bsonjs` does not
+depend on PyMongo and can offer a nice performance improvement over
+:mod:`~bson.json_util`. `python-bsonjs` works best with PyMongo when using
+:class:`~bson.raw_bson.RawBSONDocument`.
 
 Why do I get OverflowError decoding dates stored by another language's driver?
 ------------------------------------------------------------------------------
@@ -440,16 +475,39 @@ just that field::
 
 Using PyMongo with Multiprocessing
 ----------------------------------
-There are a few things to be aware of when using multiprocessing with PyMongo.
-On certain platforms (`defined here <https://hg.python.org/cpython/file/d2b8354e87f5/Modules/socketmodule.c#l187>`_)
-:class:`~pymongo.mongo_client.MongoClient` MUST be initialized with ``connect=False`` if a :class:`~pymongo.mongo_client.MongoClient` used in a
-child process is initialized before forking. If ``connect`` cannot be False,
-then :class:`~pymongo.mongo_client.MongoClient` must be initialized AFTER forking.
 
-This is because CPython must acquire a lock before calling
-`getaddrinfo() <https://hg.python.org/cpython/file/d2b8354e87f5/Modules/socketmodule.c#l4203>`_.
-A deadlock will occur if the :class:`~pymongo.mongo_client.MongoClient`'s parent process forks (on the main
-thread) while its monitor thread is in the getaddrinfo() system call.
+On Unix systems the multiprocessing module spawns processes using ``fork()``.
+Care must be taken when using instances of
+:class:`~pymongo.mongo_client.MongoClient` with ``fork()``. Specifically,
+instances of MongoClient must not be copied from a parent process to a child
+process. Instead, the parent process and each child process must create their
+own instances of MongoClient. For example::
 
-PyMongo will issue a warning if there is a chance of this deadlock occurring.
+  # Each process creates its own instance of MongoClient.
+  def func():
+      db = pymongo.MongoClient().mydb
+      # Do something with db.
 
+  proc = multiprocessing.Process(target=func)
+  proc.start()
+
+**Never do this**::
+
+  client = pymongo.MongoClient()
+
+  # Each child process attempts to copy a global MongoClient
+  # created in the parent process. Never do this.
+  def func():
+    db = client.mydb
+    # Do something with db.
+
+  proc = multiprocessing.Process(target=func)
+  proc.start()
+
+Instances of MongoClient copied from the parent process have a high probability
+of deadlock in the child process due to
+:ref:`inherent incompatibilities between fork(), threads, and locks
+<pymongo-fork-safe-details>`. PyMongo will attempt to issue a warning if there
+is a chance of this deadlock occurring.
+
+.. seealso:: :ref:`pymongo-fork-safe`

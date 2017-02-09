@@ -1,7 +1,6 @@
 import os
 import platform
 import re
-import subprocess
 import sys
 import warnings
 
@@ -26,7 +25,13 @@ from distutils.errors import CCompilerError, DistutilsOptionError
 from distutils.errors import DistutilsPlatformError, DistutilsExecError
 from distutils.core import Extension
 
-version = "3.3.0"
+try:
+    import sphinx
+    _HAVE_SPHINX = True
+except ImportError:
+    _HAVE_SPHINX = False
+
+version = "3.4.0"
 
 f = open("README.rst")
 try:
@@ -125,11 +130,58 @@ class doc(Command):
         pass
 
     def run(self):
+
+        if not _HAVE_SPHINX:
+            raise RuntimeError(
+                "You must install Sphinx to build or test the documentation.")
+
+        if sys.version_info[0] >= 3:
+            import doctest
+            from doctest import OutputChecker as _OutputChecker
+
+            # Match u or U (possibly followed by r or R), removing it.
+            # r/R can follow u/U but not precede it. Don't match the
+            # single character string 'u' or 'U'.
+            _u_literal_re = re.compile(
+                r"(\W|^)(?<![\'\"])[uU]([rR]?[\'\"])", re.UNICODE)
+             # Match b or B (possibly followed by r or R), removing.
+             # r/R can follow b/B but not precede it. Don't match the
+             # single character string 'b' or 'B'.
+            _b_literal_re = re.compile(
+                r"(\W|^)(?<![\'\"])[bB]([rR]?[\'\"])", re.UNICODE)
+
+            class _StringPrefixFixer(_OutputChecker):
+
+                def check_output(self, want, got, optionflags):
+                    # The docstrings are written with python 2.x in mind.
+                    # To make the doctests pass in python 3 we have to
+                    # strip the 'u' prefix from the expected results. The
+                    # actual results won't have that prefix.
+                    want = re.sub(_u_literal_re, r'\1\2', want)
+                    # We also have to strip the 'b' prefix from the actual
+                    # results since python 2.x expected results won't have
+                    # that prefix.
+                    got = re.sub(_b_literal_re, r'\1\2', got)
+                    return super(
+                        _StringPrefixFixer, self).check_output(
+                            want, got, optionflags)
+
+                def output_difference(self, example, got, optionflags):
+                    example.want = re.sub(_u_literal_re, r'\1\2', example.want)
+                    got = re.sub(_b_literal_re, r'\1\2', got)
+                    return super(
+                        _StringPrefixFixer, self).output_difference(
+                            example, got, optionflags)
+
+            doctest.OutputChecker = _StringPrefixFixer
+
         if self.test:
-            path = "doc/_build/doctest"
+            path = os.path.join(
+                os.path.abspath('.'), "doc", "_build", "doctest")
             mode = "doctest"
         else:
-            path = "doc/_build/%s" % version
+            path = os.path.join(
+                os.path.abspath('.'), "doc", "_build", version)
             mode = "html"
 
             try:
@@ -137,8 +189,15 @@ class doc(Command):
             except:
                 pass
 
-        status = subprocess.call(["sphinx-build", "-E",
-                                  "-b", mode, "doc", path])
+        sphinx_args = ["-E", "-b", mode, "doc", path]
+
+        # sphinx.main calls sys.exit when sphinx.build_main exists.
+        # Call build_main directly so we can check status and print
+        # the full path to the built docs.
+        if hasattr(sphinx, 'build_main'):
+            status = sphinx.build_main(sphinx_args)
+        else:
+            status = sphinx.main(sphinx_args)
 
         if status:
             raise RuntimeError("documentation step '%s' failed" % (mode,))
@@ -243,20 +302,18 @@ ext_modules = [Extension('bson._cbson',
                          sources=['pymongo/_cmessagemodule.c',
                                   'bson/buffer.c'])]
 
-extras_require = {}
+extras_require = {'tls': []}
 vi = sys.version_info
+if vi[0] == 2:
+    extras_require['tls'].append("ipaddress")
 if sys.platform == 'win32':
     extras_require['gssapi'] = ["winkerberos>=0.3.0"]
     if vi[0] == 2 and vi < (2, 7, 9) or vi[0] == 3 and vi < (3, 4):
-        extras_require['tls'] = ["wincertstore>=0.2"]
-    else:
-        extras_require['tls'] = []
+        extras_require['tls'].append("wincertstore>=0.2")
 else:
     extras_require['gssapi'] = ["pykerberos"]
     if vi[0] == 2 and vi < (2, 7, 9):
-        extras_require['tls'] = ["certifi"]
-    else:
-        extras_require['tls'] = []
+        extras_require['tls'].append("certifi")
 
 extra_opts = {
     "packages": ["bson", "pymongo", "gridfs"]

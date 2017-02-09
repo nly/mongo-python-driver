@@ -23,7 +23,7 @@ sys.path[0:0] = [""]
 
 from bson.codec_options import CodecOptions
 from bson.son import SON
-from pymongo.common import partition_node
+from pymongo.common import MAX_SUPPORTED_WIRE_VERSION, partition_node
 from pymongo.errors import (AutoReconnect,
                             ConfigurationError,
                             ConnectionFailure,
@@ -36,11 +36,9 @@ from pymongo.read_preferences import ReadPreference, Secondary, Nearest
 from pymongo.write_concern import WriteConcern
 from test import (client_context,
                   client_knobs,
-                  host,
                   IntegrationTest,
-                  pair,
-                  port,
                   unittest,
+                  SkipTest,
                   db_pwd,
                   db_user,
                   MockClientTest)
@@ -90,22 +88,26 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
                 MongoReplicaSetClient()
 
     def test_connect(self):
-        client = MongoClient(pair, replicaSet='fdlksjfdslkjfd',
-                             serverSelectionTimeoutMS=100)
+        client = MongoClient(
+            client_context.pair,
+            replicaSet='fdlksjfdslkjfd',
+            serverSelectionTimeoutMS=100)
 
         with self.assertRaises(ConnectionFailure):
             client.test.test.find_one()
 
     def test_repr(self):
         with ignore_deprecations():
-            client = MongoReplicaSetClient(host, port,
-                                           replicaSet=self.name)
+            client = MongoReplicaSetClient(
+                client_context.host,
+                client_context.port,
+                replicaSet=self.name)
 
         self.assertIn("MongoReplicaSetClient(host=[", repr(client))
-        self.assertIn(pair, repr(client))
+        self.assertIn(client_context.pair, repr(client))
 
     def test_properties(self):
-        c = client_context.rs_client
+        c = client_context.client
         c.admin.command('ping')
 
         wait_until(lambda: c.primary == self.primary, "discover primary")
@@ -131,11 +133,13 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
 
         tag_sets = [{'dc': 'la', 'rack': '2'}, {'foo': 'bar'}]
         secondary = Secondary(tag_sets=tag_sets)
-        c = MongoClient(
-            pair, replicaSet=self.name, maxPoolSize=25,
-            document_class=SON, tz_aware=True,
+        c = rs_client(
+            maxPoolSize=25,
+            document_class=SON,
+            tz_aware=True,
             read_preference=secondary,
-            localThresholdMS=77, j=True)
+            localThresholdMS=77,
+            j=True)
 
         self.assertEqual(c.max_pool_size, 25)
 
@@ -156,9 +160,12 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
         self.assertEqual(c.max_bson_size, 16777216)
         c.close()
 
+    @client_context.require_secondaries_count(1)
     def test_auto_reconnect_exception_when_read_preference_is_secondary(self):
-        c = MongoClient(pair, replicaSet=self.name,
-                        serverSelectionTimeoutMS=100)
+        c = MongoClient(
+            client_context.pair,
+            replicaSet=self.name,
+            serverSelectionTimeoutMS=100)
         db = c.pymongo_test
 
         def raise_socket_error(*args, **kwargs):
@@ -174,6 +181,7 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
         finally:
             socket.socket.sendall = old_sendall
 
+    @client_context.require_secondaries_count(1)
     def test_timeout_does_not_mark_member_down(self):
         # If a query times out, the client shouldn't mark the member "down".
 
@@ -206,18 +214,17 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
             # No error.
             coll.find_one()
 
-    @client_context.require_replica_set
     @client_context.require_ipv6
     def test_ipv6(self):
-        c = MongoClient("mongodb://[::1]:%d" % (port,), replicaSet=self.name)
+        port = client_context.port
+        c = rs_client("mongodb://[::1]:%d" % (port,))
 
         # Client switches to IPv4 once it has first ismaster response.
         msg = 'discovered primary with IPv4 address "%r"' % (self.primary,)
         wait_until(lambda: c.primary == self.primary, msg)
 
         # Same outcome with both IPv4 and IPv6 seeds.
-        c = MongoClient("[::1]:%d,localhost:%d" % (port, port),
-                        replicaSet=self.name)
+        c = rs_client("[::1]:%d,localhost:%d" % (port, port))
 
         wait_until(lambda: c.primary == self.primary, msg)
 
@@ -227,7 +234,7 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
             auth_str = ""
 
         uri = "mongodb://%slocalhost:%d,[::1]:%d" % (auth_str, port, port)
-        client = MongoClient(uri, replicaSet=self.name)
+        client = rs_client(uri)
         client.pymongo_test.test.insert_one({"dummy": u"object"})
         client.pymongo_test_bernie.test.insert_one({"dummy": u"object"})
 
@@ -280,9 +287,11 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
     def test_kill_cursor_explicit_primary(self):
         self._test_kill_cursor_explicit(ReadPreference.PRIMARY)
 
+    @client_context.require_secondaries_count(1)
     def test_kill_cursor_explicit_secondary(self):
         self._test_kill_cursor_explicit(ReadPreference.SECONDARY)
 
+    @client_context.require_secondaries_count(1)
     def test_not_master_error(self):
         secondary_address = one(self.secondaries)
         direct_client = single_client(*secondary_address)
@@ -291,7 +300,7 @@ class TestReplicaSetClient(TestReplicaSetClientBase):
             direct_client.pymongo_test.collection.insert_one({})
 
         db = direct_client.get_database(
-                "pymongo_test", write_concern=WriteConcern(w=0))
+            "pymongo_test", write_concern=WriteConcern(w=0))
         with self.assertRaises(NotMasterError):
             db.collection.insert_one({})
 
@@ -317,7 +326,9 @@ class TestReplicaSetWireVersion(MockClientTest):
         c.set_wire_version_range('a:1', 2, 2)
 
         # A secondary doesn't overlap with us.
-        c.set_wire_version_range('b:2', 5, 6)
+        c.set_wire_version_range('b:2',
+                                 MAX_SUPPORTED_WIRE_VERSION + 1,
+                                 MAX_SUPPORTED_WIRE_VERSION + 2)
 
         def raises_configuration_error():
             try:
